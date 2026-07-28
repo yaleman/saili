@@ -1,0 +1,18 @@
+[tasks.ruff]
+run = "uv run ruff check"
+[tasks.ty]
+run = "uv run ty check"
+[tasks.pytest]
+run = "uv run pytest"
+
+[tasks.cargo-fmt]
+run = "cargo fmt --all --quiet"
+[tasks.clippy]
+depends = ["cargo-fmt"]
+run = "cargo clippy --all-targets --quiet"
+[tasks.cargo-test]
+depends = ["cargo-fmt"]
+run = "cargo test --quiet"
+
+[tasks.check]
+depends = ["ruff", "ty", "clippy", "pytest", "cargo-test"]
