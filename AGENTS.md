@@ -17,6 +17,9 @@ A Rust TUI application for reading SAILI Simulator - PhoenixRC Controllers. Work
 - `cargo build` - Build library and binaries (Debug mode)
 - `cargo test` - Run library and protocol tests
 
+### Test & Verify
+- `mise check` - Run all checks (lint, typecheck, test)
+
 ### Common Workflows
 - Development: `cargo run` (Debug) or `cargo run --release` (optimized)
 - Quick test: `cargo test --lib` (library tests only)
