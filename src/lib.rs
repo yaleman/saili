@@ -4,6 +4,17 @@ use std::time::Duration;
 use hidapi::{HidApi, HidDevice, HidError};
 use thiserror::Error;
 
+mod esphome;
+mod rc;
+
+pub use esphome::{
+    ActionAcknowledgement, ActionSchemaMismatch, EspHomeError, EspHomeRcClient,
+    MalformedMessageReason, ServerIdentity,
+};
+pub use rc::{
+    MappingError, RC_CHANNEL_COUNT, RC_MAX_US, RC_MID_US, RC_MIN_US, RcChannels, RcMapping,
+};
+
 pub const VENDOR_ID: u16 = 0x1781;
 pub const PRODUCT_ID: u16 = 0x0898;
 pub const CHANNEL_COUNT: usize = 7;

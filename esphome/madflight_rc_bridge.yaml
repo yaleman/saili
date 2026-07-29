@@ -1,0 +1,253 @@
+substitutions:
+  device_name: madflight-rc-bridge
+  friendly_name: MadFlight RC Bridge
+  esp32_board: esp32dev
+  crsf_tx_pin: GPIO17
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+  comment: Wi-Fi to CRSF bridge for bench-testing a MadFlight FC3
+
+esp32:
+  board: ${esp32_board}
+  framework:
+    type: esp-idf
+
+logger:
+  level: INFO
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "${friendly_name} Setup"
+    password: !secret fallback_ap_password
+
+captive_portal:
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+  actions:
+    - action: set_rc_channels
+      supports_response: status
+      variables:
+        roll_us: int
+        pitch_us: int
+        throttle_us: int
+        yaw_us: int
+        aux1_us: int
+        aux2_us: int
+        aux3_us: int
+        aux4_us: int
+        aux5_us: int
+        aux6_us: int
+        aux7_us: int
+        aux8_us: int
+        aux9_us: int
+        aux10_us: int
+        aux11_us: int
+        aux12_us: int
+      then:
+        - lambda: |-
+            const std::array<int, 16> channels_us = {
+              roll_us, pitch_us, throttle_us, yaw_us,
+              aux1_us, aux2_us, aux3_us, aux4_us,
+              aux5_us, aux6_us, aux7_us, aux8_us,
+              aux9_us, aux10_us, aux11_us, aux12_us
+            };
+
+            bool valid = true;
+            for (const int value : channels_us) {
+              if (value < 988 || value > 2012) {
+                valid = false;
+                break;
+              }
+            }
+
+            id(last_command_valid) = valid;
+            if (!valid) {
+              return;
+            }
+
+            for (size_t i = 0; i < id(rc_channels_us).size(); ++i) {
+              id(rc_channels_us)[i] = static_cast<uint16_t>(channels_us[i]);
+            }
+            id(last_command_ms) = millis();
+            id(command_seen) = true;
+            id(failsafe_active) = false;
+            id(command_count) += 1;
+        - api.respond:
+            success: !lambda "return id(last_command_valid);"
+            error_message: !lambda |-
+              if (id(last_command_valid)) {
+                return "";
+              }
+              return "Every channel must be from 988 to 2012 us";
+
+uart:
+  id: crsf_uart
+  tx_pin:
+    number: ${crsf_tx_pin}
+    inverted: false
+  baud_rate: 420000
+  data_bits: 8
+  parity: NONE
+  stop_bits: 1
+
+globals:
+  - id: rc_channels_us
+    type: std::array<uint16_t, 16>
+    restore_value: false
+    initial_value: "{1500, 1500, 988, 1500, 988, 988, 988, 988, 988, 988, 988, 988, 988, 988, 988, 988}"
+
+  - id: last_command_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  - id: command_seen
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+  - id: last_command_valid
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+  - id: failsafe_active
+    type: bool
+    restore_value: false
+    initial_value: "true"
+
+  - id: command_count
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  - id: crsf_frame_count
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+interval:
+  - interval: 20ms
+    then:
+      - lambda: |-
+          // Do not advertise a valid receiver until the first command arrives.
+          if (!id(command_seen)) {
+            return;
+          }
+
+          const uint32_t command_age_ms = millis() - id(last_command_ms);
+
+          // After one second, stop frames entirely so Betaflight/madflight also
+          // observes receiver loss and applies its configured receiver failsafe.
+          if (command_age_ms >= 1000) {
+            id(command_seen) = false;
+            id(failsafe_active) = true;
+            return;
+          }
+
+          std::array<uint16_t, 16> channels_us = id(rc_channels_us);
+
+          // Before stopping frames, explicitly send centered controls with
+          // throttle and all auxiliary channels low. With Betaflight's default
+          // AETR map, channel 5 is the arm switch.
+          if (command_age_ms >= 250) {
+            channels_us = {
+              1500, 1500, 988, 1500,
+              988, 988, 988, 988,
+              988, 988, 988, 988,
+              988, 988, 988, 988
+            };
+            id(failsafe_active) = true;
+          }
+
+          // CRSF legacy channel values:
+          //   172 = 988 us, 992 = 1500 us, 1811 = 2012 us.
+          std::array<uint16_t, 16> crsf_channels{};
+          for (size_t i = 0; i < channels_us.size(); ++i) {
+            const uint32_t offset = channels_us[i] - 988;
+            crsf_channels[i] = static_cast<uint16_t>(
+              172 + ((offset * 1639 + 512) / 1024)
+            );
+          }
+
+          // Standard CRSF RC_CHANNELS_PACKED frame:
+          // address, length, type, 16 x 11-bit channels, CRC.
+          std::array<uint8_t, 26> frame{};
+          frame[0] = 0xC8;  // Flight controller address
+          frame[1] = 24;    // Type + 22-byte payload + CRC
+          frame[2] = 0x16;  // RC_CHANNELS_PACKED
+
+          uint32_t accumulator = 0;
+          uint8_t accumulated_bits = 0;
+          size_t output_index = 3;
+
+          for (const uint16_t channel : crsf_channels) {
+            accumulator |=
+              static_cast<uint32_t>(channel & 0x07FF) << accumulated_bits;
+            accumulated_bits += 11;
+
+            while (accumulated_bits >= 8) {
+              frame[output_index++] = accumulator & 0xFF;
+              accumulator >>= 8;
+              accumulated_bits -= 8;
+            }
+          }
+
+          // CRC-8/DVB-S2 covers the frame type and payload.
+          uint8_t crc = 0;
+          for (size_t i = 2; i < 25; ++i) {
+            crc ^= frame[i];
+            for (uint8_t bit = 0; bit < 8; ++bit) {
+              crc = (crc & 0x80) != 0
+                ? static_cast<uint8_t>((crc << 1) ^ 0xD5)
+                : static_cast<uint8_t>(crc << 1);
+            }
+          }
+          frame[25] = crc;
+
+          id(crsf_uart).write_array(frame.data(), frame.size());
+          id(crsf_frame_count) += 1;
+
+binary_sensor:
+  - platform: template
+    id: rc_failsafe
+    name: RC failsafe
+    entity_category: diagnostic
+    lambda: "return id(failsafe_active);"
+
+sensor:
+  - platform: template
+    name: RC commands received
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: "return id(command_count);"
+
+  - platform: template
+    name: CRSF frames sent
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: "return id(crsf_frame_count);"
+
+  - platform: template
+    name: RC command age
+    entity_category: diagnostic
+    unit_of_measurement: ms
+    accuracy_decimals: 0
+    update_interval: 100ms
+    lambda: |-
+      if (!id(command_seen)) {
+        return NAN;
+      }
+      return millis() - id(last_command_ms);
