@@ -31,8 +31,9 @@ Mac USB port        ── SAILI USB cable   ── SAILI USB socket
 5. Leave the transmitter's main power switch **off**. On an unmodified stock
    TGY 9X, inserting the trainer lead powers the transmitter logic in simulator
    mode without powering the RF module. Its display should come on.
-6. Set the SAILI mode selector to the **Phoenix/PhoenixRC** position. The
-   working position is the one in which macOS identifies it as
+6. Set the SAILI simulator selector to **Phoenix/PhoenixRC** and its input
+   selector to **WIRE**. **SIM BOX** does not work for this direct trainer-cable
+   setup. The working selector combination makes macOS identify the adapter as
    `SAILI Simulator - PhoenixRC Controller` with USB ID `1781:0898`.
 7. Connect the SAILI adapter to the Mac over USB.
 
@@ -44,19 +45,24 @@ voltage into the trainer jack.
 
 ### Stock RF-module caveat
 
-Some stock TGY 9X transmitters do not produce a usable trainer-port PPM signal
-while the RF module is fully seated. Test first without disturbing the module.
-If the reader finds the adapter but none of the channel values move:
+The TGY 9X used with this project does not produce usable trainer-port PPM
+while its stock RF module is connected. With the module connected, the adapter
+still emits HID reports, but the controls remain fixed near their centre
+values. Disconnecting the RF module makes the controls work and confirms the
+known stock trainer-port loading fault.
 
-1. Disconnect USB and the trainer lead, and make sure the transmitter is off.
-2. If your RF module is genuinely removable, unseat it and reconnect the
-   trainer setup.
-3. If the stock module is tethered by an antenna wire, do **not** pull it out or
-   leave it hanging from that wire. Use a documented TGY 9X trainer-port
-   hardware fix instead.
+The stock module on this transmitter is tethered by its antenna wire. Do
+**not** use the transmitter with the module pulled out or leave the module
+hanging from that wire. Removing it is only a diagnostic test performed with
+USB, the trainer lead, and transmitter power disconnected first.
 
-Removing or modifying the RF module is not needed when the channels already
-move.
+Reliable simulator use with the RF module installed requires the documented
+TGY 9X trainer-port hardware modification. The established repair cuts the
+relevant PCB trace and installs a series resistor, but the board revision and
+modification points must be verified before opening or soldering the
+transmitter. Remove the transmitter battery before any internal work. See the
+[Turnigy 9X trainer-port investigation and repair](https://www.desert-wolfe.com/Projects/Turnigy/default.html)
+for the circuit measurements and modification.
 
 The transmitter's `TRAINER` menu configures the 9X as the instructor in a
 two-radio setup. It is not required when using the transmitter's PPM output
@@ -88,7 +94,10 @@ cargo run --release -- --esphome-address 192.0.2.10:6053
 
 The interface shows all seven raw inputs, the mapped roll, pitch, throttle,
 yaw, and arm states, ESPHome connection state, command counts, round-trip
-time, and whether the bridge is receiving live or safe values.
+time, whether the bridge is receiving live or safe values, and decoded
+telemetry returned by the flight controller. The telemetry panel retains the
+latest battery, attitude, GPS, flight-mode, vario, barometer, and magnetometer
+values along with the most recent raw CRSF frame.
 
 Output starts in **SAFE HOLD**. With the controller reporting fresh input,
 throttle low, and the arm switch off, press `l` to enable live forwarding.
@@ -123,7 +132,10 @@ transmit-rate options.
   malformed-report failures.
 - `RcMapping` converts adapter reports to 16 bounded RC channel values.
 - `EspHomeRcClient` performs the encrypted native API handshake, discovers and
-  validates `set_rc_channels`, and sends typed action calls.
+  validates `set_rc_channels`, subscribes to the telemetry entity, and sends
+  typed action calls.
+- `CrsfFrame` validates raw frame length and CRC-8/DVB-S2.
+- `CrsfTelemetry` decodes supported flight-controller telemetry payloads.
 
 The library does not initialize a terminal and can be used independently of
 the Ratatui application.
@@ -164,7 +176,8 @@ Press Control-C to stop.
 `esphome/madflight_rc_bridge.yaml` turns an ESP32 into a Wi-Fi-controlled CRSF
 receiver for bench testing a MadFlight FC3v2. It exposes the encrypted ESPHome
 native API action `set_rc_channels`, validates 16 channel values, and emits
-standard CRSF `RC_CHANNELS_PACKED` frames at 420000 baud and 50 Hz.
+standard CRSF `RC_CHANNELS_PACKED` frames at 420000 baud and 50 Hz. The same
+full-duplex UART captures and validates telemetry returned by the FC3.
 
 This is a test interface, not a flight-control radio link. Wi-Fi and ESPHome
 task scheduling do not provide the deterministic latency or link guarantees
@@ -174,19 +187,19 @@ failsafe path before powering motors.
 ### Hardware
 
 The default configuration targets a classic ESP32 DevKit and uses GPIO17 for
-CRSF transmit. Change the `esp32_board` and `crsf_tx_pin` substitutions at the
-top of the YAML if your board is different.
+CRSF transmit and GPIO16 for receive. Change the `esp32_board`, `crsf_tx_pin`,
+and `crsf_rx_pin` substitutions at the top of the YAML if your board is
+different.
 
 ```text
-ESP32 GPIO17 / TX  ── FC3 GPIO1 / SER0_RX
-ESP32 GND          ── FC3 GND
+ESP32 GPIO17 / TX  ──> FC3 GPIO1 / SER0_RX   controller frames
+ESP32 GPIO16 / RX <──  FC3 GPIO0 / SER0_TX   telemetry
+ESP32 GND          ─── FC3 GND
 ```
 
-Only TX and common ground are required. The bridge does not currently receive
-CRSF telemetry, so leave FC3 GPIO0 / `SER0_TX` disconnected. Power the ESP32
-from its own USB input and power the FC3 normally. Do not join the boards'
-5 V or 3.3 V rails unless you have deliberately designed a shared regulated
-power supply.
+Power the ESP32 from its own USB input and power the FC3 normally. Do not join
+the boards' 5 V or 3.3 V rails unless you have deliberately designed a shared
+regulated power supply.
 
 Both boards use 3.3 V logic. Do not insert an RS-232 adapter, inverter, or
 5 V logic-level converter between them.
@@ -201,7 +214,14 @@ With the propellers removed:
 3. In **Receiver**, select **Serial (via UART)** and choose **CRSF** as the
    serial receiver provider.
 4. Leave serial receiver inversion disabled.
-5. After the ESP32 is running and receiving commands, verify channel motion in
+5. Enable the Betaflight **Telemetry** feature. The CLI equivalent is:
+
+   ```text
+   feature TELEMETRY
+   save
+   ```
+
+6. After the ESP32 is running and receiving commands, verify channel motion in
    the Receiver tab before configuring any arm mode.
 
 ### Build and flash the ESP32
@@ -276,8 +296,30 @@ The bridge sends no receiver frames until the first valid command. If commands
 stop, it sends centered roll, pitch, and yaw with low throttle and all
 auxiliaries low after 250 ms. At one second it stops CRSF frames completely so
 the FC3 also detects receiver loss and applies its configured Betaflight
-failsafe. The device exposes command count, CRSF frame count, command age, and
-failsafe diagnostic entities through ESPHome.
+failsafe.
+
+### Flight-controller telemetry
+
+The FC3 sends telemetry back through `SER0_TX`. The ESPHome bridge validates
+each CRSF frame and publishes its raw hexadecimal form through the native API.
+The Rust application subscribes to that stream and decodes:
+
+| CRSF data | Displayed values |
+| --- | --- |
+| Battery | Voltage, current, consumed capacity, remaining percentage |
+| Attitude | Pitch, roll, yaw |
+| GPS | Position, groundspeed, heading, altitude, satellites |
+| Flight mode | Current mode name |
+| Vario and barometer | Vertical speed, altitude, pressure, temperature |
+| Magnetometer | X, Y, Z field values |
+
+Heartbeat, device-info, and MSP-response frames are identified. Unknown valid
+frame types are retained and shown as raw hexadecimal data instead of being
+discarded.
+
+The device also exposes command count, outgoing CRSF frame count, incoming
+telemetry frame count, telemetry CRC errors, command age, and failsafe
+diagnostic entities through ESPHome.
 
 ## Troubleshooting
 
@@ -320,5 +362,11 @@ read through macOS's HID interface and does not need root access.
   documents the `SER0_TX`/`SER0_RX` pinout.
 - [Betaflight CRSF receiver implementation](https://github.com/betaflight/betaflight/blob/master/src/main/rx/crsf.c)
   is the protocol reference used by the bridge.
+- [Betaflight CRSF telemetry implementation](https://github.com/betaflight/betaflight/blob/master/src/main/telemetry/crsf.c)
+  documents the telemetry frames emitted by the flight controller.
+- [TBS CRSF specification](https://github.com/tbs-fpv/tbs-crsf-spec/blob/main/crsf.md)
+  documents framing, telemetry payloads, and CRC calculation.
 - [ESPHome native API actions](https://esphome.io/components/api/#user-defined-actions)
   documents the Wi-Fi command interface.
+- [ESPHome UART component](https://esphome.io/components/uart/)
+  documents the bidirectional serial configuration.

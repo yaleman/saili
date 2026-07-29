@@ -16,3 +16,4 @@ wheels/
 
 # Local ESPHome credentials
 /esphome/secrets.yaml
+betaflight/

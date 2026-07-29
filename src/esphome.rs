@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
@@ -25,12 +26,17 @@ const DISCONNECT_RESPONSE: u16 = 6;
 const PING_REQUEST: u16 = 7;
 const PING_RESPONSE: u16 = 8;
 const LIST_ENTITIES_REQUEST: u16 = 11;
+const LIST_ENTITIES_TEXT_SENSOR_RESPONSE: u16 = 18;
 const LIST_ENTITIES_DONE_RESPONSE: u16 = 19;
+const SUBSCRIBE_STATES_REQUEST: u16 = 20;
+const TEXT_SENSOR_STATE_RESPONSE: u16 = 27;
 const LIST_ENTITIES_SERVICES_RESPONSE: u16 = 41;
 const EXECUTE_SERVICE_REQUEST: u16 = 42;
 const EXECUTE_SERVICE_RESPONSE: u16 = 131;
 
 const RC_ACTION_NAME: &str = "set_rc_channels";
+const TELEMETRY_TEXT_SENSOR_NAME: &str = "CRSF telemetry frame";
+const MAX_PENDING_TELEMETRY_FRAMES: usize = 128;
 const SUPPORTS_RESPONSE_STATUS: u32 = 100;
 const RC_ACTION_ARGUMENTS: [&str; RC_CHANNEL_COUNT] = [
     "roll_us",
@@ -56,6 +62,8 @@ pub struct EspHomeRcClient {
     stream: TcpStream,
     transport: TransportState,
     action_key: u32,
+    telemetry_text_sensor_key: u32,
+    pending_telemetry_frames: VecDeque<String>,
     next_call_id: u32,
     server: ServerIdentity,
 }
@@ -100,6 +108,8 @@ impl EspHomeRcClient {
             stream,
             transport,
             action_key: 0,
+            telemetry_text_sensor_key: 0,
+            pending_telemetry_frames: VecDeque::new(),
             next_call_id: 1,
             server: ServerIdentity {
                 name: noise_identity.name,
@@ -130,7 +140,10 @@ impl EspHomeRcClient {
         client.server.version = hello.server_info;
 
         client.send_empty(LIST_ENTITIES_REQUEST)?;
-        client.action_key = client.discover_action(timeout)?;
+        let discovery = client.discover_entities(timeout)?;
+        client.action_key = discovery.action_key;
+        client.telemetry_text_sensor_key = discovery.telemetry_text_sensor_key;
+        client.send_empty(SUBSCRIBE_STATES_REQUEST)?;
 
         Ok(client)
     }
@@ -144,7 +157,7 @@ impl EspHomeRcClient {
         &mut self,
         channels: RcChannels,
         timeout: Duration,
-    ) -> Result<ActionAcknowledgement, EspHomeError> {
+    ) -> Result<CommandExchange, EspHomeError> {
         self.stream
             .set_read_timeout(Some(timeout))
             .map_err(EspHomeError::ConfigureSocket)?;
@@ -189,9 +202,17 @@ impl EspHomeRcClient {
                             message: response.error_message,
                         });
                     }
-                    return Ok(ActionAcknowledgement {
-                        round_trip: started.elapsed(),
+                    return Ok(CommandExchange {
+                        acknowledgement: ActionAcknowledgement {
+                            round_trip: started.elapsed(),
+                        },
+                        telemetry_frames: self.pending_telemetry_frames.drain(..).collect(),
                     });
+                }
+                TEXT_SENSOR_STATE_RESPONSE => {
+                    let state =
+                        proto::TextSensorStateResponse::decode(response.payload.as_slice())?;
+                    self.capture_telemetry_state(state);
                 }
                 PING_REQUEST => self.send_empty(PING_RESPONSE)?,
                 DISCONNECT_REQUEST => {
@@ -207,12 +228,13 @@ impl EspHomeRcClient {
         }
     }
 
-    fn discover_action(&mut self, timeout: Duration) -> Result<u32, EspHomeError> {
+    fn discover_entities(&mut self, timeout: Duration) -> Result<Discovery, EspHomeError> {
         self.stream
             .set_read_timeout(Some(timeout))
             .map_err(EspHomeError::ConfigureSocket)?;
         let started = Instant::now();
         let mut matching_action = None;
+        let mut telemetry_text_sensor = None;
 
         loop {
             let response = match self.read_message() {
@@ -231,8 +253,21 @@ impl EspHomeRcClient {
                         matching_action = Some(service.key);
                     }
                 }
+                LIST_ENTITIES_TEXT_SENSOR_RESPONSE => {
+                    let text_sensor =
+                        proto::ListEntitiesTextSensorResponse::decode(response.payload.as_slice())?;
+                    if text_sensor.name == TELEMETRY_TEXT_SENSOR_NAME {
+                        telemetry_text_sensor = Some(text_sensor.key);
+                    }
+                }
                 LIST_ENTITIES_DONE_RESPONSE => {
-                    return matching_action.ok_or(EspHomeError::ActionNotFound);
+                    let action_key = matching_action.ok_or(EspHomeError::ActionNotFound)?;
+                    let telemetry_text_sensor_key =
+                        telemetry_text_sensor.ok_or(EspHomeError::TelemetryEntityNotFound)?;
+                    return Ok(Discovery {
+                        action_key,
+                        telemetry_text_sensor_key,
+                    });
                 }
                 PING_REQUEST => self.send_empty(PING_RESPONSE)?,
                 DISCONNECT_REQUEST => {
@@ -246,6 +281,16 @@ impl EspHomeRcClient {
                 return Err(EspHomeError::DiscoveryTimeout { timeout });
             }
         }
+    }
+
+    fn capture_telemetry_state(&mut self, state: proto::TextSensorStateResponse) {
+        if state.key != self.telemetry_text_sensor_key || state.missing_state {
+            return;
+        }
+        if self.pending_telemetry_frames.len() == MAX_PENDING_TELEMETRY_FRAMES {
+            self.pending_telemetry_frames.pop_front();
+        }
+        self.pending_telemetry_frames.push_back(state.state);
     }
 
     fn send_empty(&mut self, message_type: u16) -> Result<(), EspHomeError> {
@@ -539,9 +584,20 @@ pub struct ActionAcknowledgement {
     pub round_trip: Duration,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommandExchange {
+    pub acknowledgement: ActionAcknowledgement,
+    pub telemetry_frames: Vec<String>,
+}
+
 struct NoiseIdentity {
     name: String,
     mac_address: String,
+}
+
+struct Discovery {
+    action_key: u32,
+    telemetry_text_sensor_key: u32,
 }
 
 struct WireMessage {
@@ -636,6 +692,9 @@ pub enum EspHomeError {
     #[error("ESPHome did not advertise the set_rc_channels action")]
     ActionNotFound,
 
+    #[error("ESPHome did not advertise the CRSF telemetry frame text sensor")]
+    TelemetryEntityNotFound,
+
     #[error("ESPHome set_rc_channels schema differs from the bridge config: {reason}")]
     ActionSchemaMismatch { reason: ActionSchemaMismatch },
 
@@ -705,6 +764,26 @@ mod proto {
         pub args: Vec<ListEntitiesServicesArgument>,
         #[prost(uint32, tag = "4")]
         pub supports_response: u32,
+    }
+
+    #[derive(Clone, PartialEq, prost::Message)]
+    pub struct ListEntitiesTextSensorResponse {
+        #[prost(string, tag = "1")]
+        pub object_id: String,
+        #[prost(fixed32, tag = "2")]
+        pub key: u32,
+        #[prost(string, tag = "3")]
+        pub name: String,
+    }
+
+    #[derive(Clone, PartialEq, prost::Message)]
+    pub struct TextSensorStateResponse {
+        #[prost(fixed32, tag = "1")]
+        pub key: u32,
+        #[prost(string, tag = "2")]
+        pub state: String,
+        #[prost(bool, tag = "3")]
+        pub missing_state: bool,
     }
 
     #[derive(Clone, PartialEq, prost::Message)]

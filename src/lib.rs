@@ -4,11 +4,19 @@ use std::time::Duration;
 use hidapi::{HidApi, HidDevice, HidError};
 use thiserror::Error;
 
+mod crsf;
 mod esphome;
 mod rc;
 
+pub use crsf::{
+    CRSF_FRAME_SIZE_MAX, CRSF_FRAME_TYPE_ATTITUDE, CRSF_FRAME_TYPE_BAROMETER,
+    CRSF_FRAME_TYPE_BAROMETRIC_ALTITUDE, CRSF_FRAME_TYPE_BATTERY, CRSF_FRAME_TYPE_DEVICE_INFO,
+    CRSF_FRAME_TYPE_FLIGHT_MODE, CRSF_FRAME_TYPE_GPS, CRSF_FRAME_TYPE_HEARTBEAT,
+    CRSF_FRAME_TYPE_MAGNETOMETER, CRSF_FRAME_TYPE_MSP_RESPONSE, CRSF_FRAME_TYPE_VARIO, CrsfError,
+    CrsfFrame, CrsfTelemetry, crc8_dvb_s2,
+};
 pub use esphome::{
-    ActionAcknowledgement, ActionSchemaMismatch, EspHomeError, EspHomeRcClient,
+    ActionAcknowledgement, ActionSchemaMismatch, CommandExchange, EspHomeError, EspHomeRcClient,
     MalformedMessageReason, ServerIdentity,
 };
 pub use rc::{

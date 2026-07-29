@@ -9,8 +9,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Gauge, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 use saili::{
-    CHANNEL_COUNT, DeviceIdentity, DeviceState, MappingError, RC_MAX_US, RC_MIN_US, RcChannels,
-    RcMapping, ReadStatus, SailiDevice, SailiError, ServerIdentity,
+    CHANNEL_COUNT, CrsfFrame, CrsfTelemetry, DeviceIdentity, DeviceState, MappingError, RC_MAX_US,
+    RC_MIN_US, RcChannels, RcMapping, ReadStatus, SailiDevice, SailiError, ServerIdentity,
 };
 use thiserror::Error;
 
@@ -123,6 +123,7 @@ struct App {
     commands_acknowledged: u64,
     last_round_trip: Option<Duration>,
     safe_override: bool,
+    telemetry: FlightControllerTelemetry,
     notice: String,
 }
 
@@ -141,6 +142,7 @@ impl App {
             commands_acknowledged: 0,
             last_round_trip: None,
             safe_override: true,
+            telemetry: FlightControllerTelemetry::default(),
             notice: "Safe hold active; press l with throttle low and arm off".to_owned(),
         }
     }
@@ -170,6 +172,12 @@ impl App {
                 self.commands_acknowledged = acknowledged;
                 self.last_round_trip = Some(round_trip);
                 self.safe_override = safe_override;
+            }
+            BackendEvent::TelemetryReceived { frame } => {
+                self.telemetry.update(frame);
+            }
+            BackendEvent::TelemetryRejected { message } => {
+                self.telemetry.reject(message);
             }
             BackendEvent::Failed { message } => {
                 self.backend_state = BackendState::Failed { message };
@@ -217,12 +225,162 @@ enum BackendState {
     Failed { message: String },
 }
 
+#[derive(Default)]
+struct FlightControllerTelemetry {
+    frames_received: u64,
+    frames_rejected: u64,
+    last_update: Option<Instant>,
+    last_frame: Option<CrsfFrame>,
+    last_kind: Option<&'static str>,
+    last_error: Option<String>,
+    battery: Option<BatteryTelemetry>,
+    attitude: Option<AttitudeTelemetry>,
+    gps: Option<GpsTelemetry>,
+    flight_mode: Option<String>,
+    vario_ms: Option<f32>,
+    barometric_altitude_metres: Option<f32>,
+    barometer: Option<BarometerTelemetry>,
+    magnetometer: Option<MagnetometerTelemetry>,
+}
+
+impl FlightControllerTelemetry {
+    fn update(&mut self, frame: CrsfFrame) {
+        self.frames_received = self.frames_received.saturating_add(1);
+        self.last_update = Some(Instant::now());
+        self.last_error = None;
+
+        match frame.telemetry() {
+            Ok(telemetry) => {
+                self.last_kind = Some(telemetry.name());
+                match telemetry {
+                    CrsfTelemetry::Gps {
+                        latitude_degrees,
+                        longitude_degrees,
+                        ground_speed_kmh,
+                        heading_degrees,
+                        altitude_metres,
+                        satellites,
+                    } => {
+                        self.gps = Some(GpsTelemetry {
+                            latitude_degrees,
+                            longitude_degrees,
+                            ground_speed_kmh,
+                            heading_degrees,
+                            altitude_metres,
+                            satellites,
+                        });
+                    }
+                    CrsfTelemetry::Vario { vertical_speed_ms } => {
+                        self.vario_ms = Some(vertical_speed_ms);
+                    }
+                    CrsfTelemetry::Battery {
+                        voltage_v,
+                        current_a,
+                        capacity_mah,
+                        remaining_percent,
+                    } => {
+                        self.battery = Some(BatteryTelemetry {
+                            voltage_v,
+                            current_a,
+                            capacity_mah,
+                            remaining_percent,
+                        });
+                    }
+                    CrsfTelemetry::BarometricAltitude {
+                        altitude_metres,
+                        vertical_speed_ms,
+                    } => {
+                        self.barometric_altitude_metres = Some(altitude_metres);
+                        self.vario_ms = Some(vertical_speed_ms);
+                    }
+                    CrsfTelemetry::Barometer {
+                        pressure_pa,
+                        temperature_c,
+                    } => {
+                        self.barometer = Some(BarometerTelemetry {
+                            pressure_pa,
+                            temperature_c,
+                        });
+                    }
+                    CrsfTelemetry::Magnetometer { x, y, z } => {
+                        self.magnetometer = Some(MagnetometerTelemetry { x, y, z });
+                    }
+                    CrsfTelemetry::Attitude {
+                        pitch_radians,
+                        roll_radians,
+                        yaw_radians,
+                    } => {
+                        self.attitude = Some(AttitudeTelemetry {
+                            pitch_radians,
+                            roll_radians,
+                            yaw_radians,
+                        });
+                    }
+                    CrsfTelemetry::FlightMode(mode) => {
+                        self.flight_mode = Some(mode);
+                    }
+                    CrsfTelemetry::Heartbeat
+                    | CrsfTelemetry::DeviceInfo
+                    | CrsfTelemetry::MspResponse
+                    | CrsfTelemetry::Unknown { .. } => {}
+                }
+            }
+            Err(error) => {
+                self.frames_rejected = self.frames_rejected.saturating_add(1);
+                self.last_kind = Some("Malformed");
+                self.last_error = Some(error.to_string());
+            }
+        }
+
+        self.last_frame = Some(frame);
+    }
+
+    fn reject(&mut self, message: String) {
+        self.frames_rejected = self.frames_rejected.saturating_add(1);
+        self.last_error = Some(message);
+    }
+}
+
+struct BatteryTelemetry {
+    voltage_v: f32,
+    current_a: f32,
+    capacity_mah: u32,
+    remaining_percent: u8,
+}
+
+struct AttitudeTelemetry {
+    pitch_radians: f32,
+    roll_radians: f32,
+    yaw_radians: f32,
+}
+
+struct GpsTelemetry {
+    latitude_degrees: f64,
+    longitude_degrees: f64,
+    ground_speed_kmh: f32,
+    heading_degrees: f32,
+    altitude_metres: i32,
+    satellites: u8,
+}
+
+struct BarometerTelemetry {
+    pressure_pa: i32,
+    temperature_c: f32,
+}
+
+struct MagnetometerTelemetry {
+    x: i16,
+    y: i16,
+    z: i16,
+}
+
 fn render(frame: &mut Frame, app: &App) {
     let [
         status_area,
         channels_area,
         rc_area,
         backend_area,
+        telemetry_area,
         raw_area,
         help_area,
     ] = Layout::vertical([
@@ -230,6 +388,7 @@ fn render(frame: &mut Frame, app: &App) {
         Constraint::Length((CHANNEL_COUNT + 2) as u16),
         Constraint::Length(7),
         Constraint::Length(4),
+        Constraint::Length(8),
         Constraint::Length(3),
         Constraint::Min(1),
     ])
@@ -239,6 +398,7 @@ fn render(frame: &mut Frame, app: &App) {
     render_channels(frame, channels_area, app.state);
     render_rc_input(frame, rc_area, app);
     render_backend(frame, backend_area, app);
+    render_telemetry(frame, telemetry_area, &app.telemetry);
     render_raw_packet(frame, raw_area, app.state);
     render_help(frame, help_area, app);
 }
@@ -388,6 +548,130 @@ fn render_backend(frame: &mut Frame, area: Rect, app: &App) {
             .block(Block::bordered().title(" ESPHome CRSF bridge ")),
         area,
     );
+}
+
+fn render_telemetry(frame: &mut Frame, area: Rect, telemetry: &FlightControllerTelemetry) {
+    let age = telemetry
+        .last_update
+        .map(|updated| format!("{} ms", updated.elapsed().as_millis()))
+        .unwrap_or_else(|| "--".to_owned());
+    let last_type = telemetry
+        .last_frame
+        .as_ref()
+        .map(|current| format!("0x{:02X}", current.frame_type()))
+        .unwrap_or_else(|| "--".to_owned());
+    let last_kind = telemetry.last_kind.unwrap_or("waiting");
+    let status = Line::from(format!(
+        "frames {}  •  rejected {}  •  age {}  •  last {} {last_type}",
+        telemetry.frames_received, telemetry.frames_rejected, age, last_kind
+    ));
+
+    let battery = telemetry
+        .battery
+        .as_ref()
+        .map(|current| {
+            format!(
+                "{:.1} V  {:.1} A  {} mAh  {}%",
+                current.voltage_v,
+                current.current_a,
+                current.capacity_mah,
+                current.remaining_percent
+            )
+        })
+        .unwrap_or_else(|| "--".to_owned());
+    let mode = telemetry.flight_mode.as_deref().unwrap_or("--");
+    let vario = telemetry
+        .vario_ms
+        .map(|current| format!("{current:+.2} m/s"))
+        .unwrap_or_else(|| "--".to_owned());
+    let power = Line::from(format!(
+        "battery {battery}  •  mode {mode}  •  vario {vario}"
+    ));
+
+    let attitude = telemetry
+        .attitude
+        .as_ref()
+        .map(|current| {
+            format!(
+                "pitch {:+.1}°  roll {:+.1}°  yaw {:+.1}°",
+                current.pitch_radians.to_degrees(),
+                current.roll_radians.to_degrees(),
+                current.yaw_radians.to_degrees()
+            )
+        })
+        .unwrap_or_else(|| "pitch --  roll --  yaw --".to_owned());
+
+    let gps = telemetry
+        .gps
+        .as_ref()
+        .map(|current| {
+            format!(
+                "{:.6}, {:.6}  {} sat  {:.1} km/h  {:.1}°  {} m",
+                current.latitude_degrees,
+                current.longitude_degrees,
+                current.satellites,
+                current.ground_speed_kmh,
+                current.heading_degrees,
+                current.altitude_metres
+            )
+        })
+        .unwrap_or_else(|| "--".to_owned());
+
+    let barometer = telemetry
+        .barometer
+        .as_ref()
+        .map(|current| format!("{} Pa  {:.2}°C", current.pressure_pa, current.temperature_c))
+        .unwrap_or_else(|| "--".to_owned());
+    let barometric_altitude = telemetry
+        .barometric_altitude_metres
+        .map(|current| format!("{current:.1} m"))
+        .unwrap_or_else(|| "--".to_owned());
+    let magnetometer = telemetry
+        .magnetometer
+        .as_ref()
+        .map(|current| format!("x {}  y {}  z {}", current.x, current.y, current.z))
+        .unwrap_or_else(|| "--".to_owned());
+    let environment = telemetry.last_error.as_ref().map_or_else(
+        || {
+            format!(
+                "baro altitude {barometric_altitude}  •  pressure {barometer}  •  magnetometer {magnetometer}"
+            )
+        },
+        |error| format!("error {error}"),
+    );
+
+    let raw_width = usize::from(area.width.saturating_sub(9));
+    let raw = telemetry
+        .last_frame
+        .as_ref()
+        .map(CrsfFrame::raw_hex)
+        .map(|value| truncate_ascii(value, raw_width))
+        .unwrap_or_else(|| "--".to_owned());
+
+    frame.render_widget(
+        Paragraph::new(vec![
+            status,
+            power,
+            Line::from(format!("attitude {attitude}")),
+            Line::from(format!("GPS {gps}")),
+            Line::from(environment),
+            Line::from(format!("raw {raw}")),
+        ])
+        .block(Block::bordered().title(" FC CRSF telemetry ")),
+        area,
+    );
+}
+
+fn truncate_ascii(mut value: String, maximum: usize) -> String {
+    if value.len() <= maximum {
+        return value;
+    }
+    if maximum <= 3 {
+        return ".".repeat(maximum);
+    }
+    value.truncate(maximum - 3);
+    value.push_str("...");
+    value
 }
 
 fn render_raw_packet(frame: &mut Frame, area: Rect, state: Option<DeviceState>) {

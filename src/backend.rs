@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use saili::{EspHomeRcClient, RcChannels, ServerIdentity};
+use saili::{CrsfFrame, EspHomeRcClient, RcChannels, ServerIdentity};
 use thiserror::Error;
 
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(3);
@@ -115,18 +115,30 @@ fn run_worker(
 
                     sent = sent.saturating_add(1);
                     match client.send_channels(channels, ACTION_TIMEOUT) {
-                        Ok(acknowledgement) => {
+                        Ok(exchange) => {
                             acknowledged = acknowledged.saturating_add(1);
                             if events
                                 .send(BackendEvent::CommandAcknowledged {
                                     sent,
                                     acknowledged,
-                                    round_trip: acknowledgement.round_trip,
+                                    round_trip: exchange.acknowledgement.round_trip,
                                     safe_override,
                                 })
                                 .is_err()
                             {
                                 return;
+                            }
+
+                            for raw_frame in exchange.telemetry_frames {
+                                let event = match CrsfFrame::from_hex(&raw_frame) {
+                                    Ok(frame) => BackendEvent::TelemetryReceived { frame },
+                                    Err(error) => BackendEvent::TelemetryRejected {
+                                        message: error.to_string(),
+                                    },
+                                };
+                                if events.send(event).is_err() {
+                                    return;
+                                }
                             }
                         }
                         Err(error) => {
@@ -219,6 +231,12 @@ pub enum BackendEvent {
         acknowledged: u64,
         round_trip: Duration,
         safe_override: bool,
+    },
+    TelemetryReceived {
+        frame: CrsfFrame,
+    },
+    TelemetryRejected {
+        message: String,
     },
     Failed {
         message: String,

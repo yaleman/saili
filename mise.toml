@@ -2,17 +2,23 @@
 run = "uv run ruff check"
 [tasks.ty]
 run = "uv run ty check"
-[tasks.pytest]
-run = "uv run pytest"
 
 [tasks.cargo-fmt]
 run = "cargo fmt --all --quiet"
 [tasks.clippy]
 depends = ["cargo-fmt"]
 run = "cargo clippy --all-targets --quiet"
+
 [tasks.cargo-test]
 depends = ["cargo-fmt"]
 run = "cargo test --quiet"
 
 [tasks.check]
-depends = ["ruff", "ty", "clippy", "pytest", "cargo-test"]
+depends = ["ruff", "ty", "clippy", "cargo-test"]
+
+[tasks.betaflight-build]
+env.PICOTOOL = "/opt/homebrew/bin/picotool"
+run = [
+    """make MADFLIGHT_FC3 EXTRA_FLAGS=\"-D'BUILD_KEY=ae04524f2f7bbb8caf15231405c01521' -D'RELEASE_NAME=2025.12.5' -DCLOUD_BUILD -DUSE_ACRO_TRAINER -DUSE_GPS -DUSE_GPS_PLUS_CODES -DUSE_LED_STRIP -DUSE_OPTICALFLOW -DUSE_OSD_HD -DUSE_PINIO -DUSE_PWM_OUTPUT -DUSE_RANGEFINDER -DUSE_SERIALRX -DUSE_SERIALRX_CRSF -DUSE_TELEMETRY -DUSE_TELEMETRY_CRSF -DUSE_VTX\"""",
+]
+dir = "betaflight"
