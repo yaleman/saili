@@ -279,8 +279,8 @@ serial port through the browser. It provides the raw interactive CLI, parsed
 drive state, CRSF status, four directional ranges, GPS, board sensors, safe
 diagnostic buttons, command history, and downloadable logs.
 
-The private hosted console is available at
-<https://saili-tank-console.james357011.chatgpt.site>.
+The hosted console is published from `main` by GitHub Actions at
+<https://yaleman.github.io/saili/>.
 
 Start it locally:
 
