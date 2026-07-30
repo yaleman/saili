@@ -12,6 +12,7 @@ pub const CRSF_FRAME_TYPE_ATTITUDE: u8 = 0x1E;
 pub const CRSF_FRAME_TYPE_FLIGHT_MODE: u8 = 0x21;
 pub const CRSF_FRAME_TYPE_DEVICE_INFO: u8 = 0x29;
 pub const CRSF_FRAME_TYPE_MSP_RESPONSE: u8 = 0x7B;
+pub const CRSF_FRAME_TYPE_RANGE: u8 = 0x7C;
 
 const CRSF_FRAME_LENGTH_MIN: usize = 2;
 const CRSF_FRAME_LENGTH_MAX: usize = 62;
@@ -150,6 +151,20 @@ impl CrsfFrame {
             }
             CRSF_FRAME_TYPE_DEVICE_INFO => Ok(CrsfTelemetry::DeviceInfo),
             CRSF_FRAME_TYPE_MSP_RESPONSE => Ok(CrsfTelemetry::MspResponse),
+            CRSF_FRAME_TYPE_RANGE => {
+                require_payload(self, 12)?;
+                let version = self.payload[2];
+                if version != 1 {
+                    return Err(CrsfError::UnsupportedRangeVersion { version });
+                }
+                let valid_mask = self.payload[3];
+                Ok(CrsfTelemetry::Range {
+                    front_metres: read_range(&self.payload[4..6], valid_mask, 0),
+                    back_metres: read_range(&self.payload[6..8], valid_mask, 1),
+                    left_metres: read_range(&self.payload[8..10], valid_mask, 2),
+                    right_metres: read_range(&self.payload[10..12], valid_mask, 3),
+                })
+            }
             frame_type => Ok(CrsfTelemetry::Unknown { frame_type }),
         }
     }
@@ -234,6 +249,12 @@ pub enum CrsfTelemetry {
     FlightMode(String),
     DeviceInfo,
     MspResponse,
+    Range {
+        front_metres: Option<f32>,
+        back_metres: Option<f32>,
+        left_metres: Option<f32>,
+        right_metres: Option<f32>,
+    },
     Unknown {
         frame_type: u8,
     },
@@ -254,6 +275,7 @@ impl CrsfTelemetry {
             Self::FlightMode(_) => "Flight mode",
             Self::DeviceInfo => "Device info",
             Self::MspResponse => "MSP response",
+            Self::Range { .. } => "Range",
             Self::Unknown { .. } => "Unknown",
         }
     }
@@ -281,6 +303,15 @@ fn read_i16(bytes: &[u8]) -> i16 {
 
 fn read_i32(bytes: &[u8]) -> i32 {
     i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+fn read_range(bytes: &[u8], valid_mask: u8, index: u8) -> Option<f32> {
+    let millimetres = read_u16(bytes);
+    if valid_mask & (1 << index) == 0 || millimetres == u16::MAX {
+        None
+    } else {
+        Some(f32::from(millimetres) / 1000.0)
+    }
 }
 
 #[must_use]
@@ -322,4 +353,7 @@ pub enum CrsfError {
         expected: usize,
         actual: usize,
     },
+
+    #[error("CRSF range telemetry version {version} is unsupported; expected version 1")]
+    UnsupportedRangeVersion { version: u8 },
 }

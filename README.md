@@ -171,6 +171,134 @@ channels=127 127 127 127   0 127 127  switch=False  raw=7f 00 7f 7f 7f 00 7f 7f
 
 Press Control-C to stop.
 
+## MadFlight FC3v2 tank firmware
+
+`firmware/` is a PlatformIO application for the MadFlight FC3v2 Rev-B. It
+turns CRSF pitch and roll into independent left/right track commands for a
+dual reversible brushed ESC. It also reads a u-blox NEO-6 GPS and four
+directional HC-SR04 sensors.
+
+This is manual drive firmware, not an autonomous rover stack. GPS and distance
+measurements are telemetry only; they do not stop or steer the vehicle.
+
+### Wiring
+
+Configure the dual 5 A reversible ESC for **independent** inputs. The firmware
+emits conventional centred 50 Hz receiver pulses: 1000 us reverse, 1500 us
+neutral, and 2000 us forward. Its initial 60% command limit keeps the active
+range to 1200-1800 us.
+
+| Device | Device pin | FC3v2 Rev-B pin |
+| --- | --- | --- |
+| CRSF bridge or receiver | TX | GPIO1 / `SER0_RX` |
+| CRSF bridge or receiver | RX | GPIO0 / `SER0_TX` |
+| Dual ESC | Left-channel signal | GPIO6 |
+| Dual ESC | Right-channel signal | GPIO7 |
+| NEO-6 GPS | TX | GPIO5 / `SER1_RX` |
+| NEO-6 GPS | RX | GPIO4 / `SER1_TX` |
+| Front HC-SR04 | Trigger / Echo | GPIO10 / GPIO11 |
+| Back HC-SR04 | Trigger / Echo | GPIO12 / GPIO13 |
+| Left HC-SR04 | Trigger / Echo | GPIO14 / GPIO15 |
+| Right HC-SR04 | Trigger / Echo | GPIO16 / GPIO17 |
+
+All devices must share ground. Power the four HC-SR04 modules from a regulated
+5 V supply, but reduce every Echo output from 5 V to 3.3 V before it reaches
+the RP2350. A 1 kohm resistor from Echo to the GPIO and a 2 kohm resistor from
+the GPIO to ground forms a suitable divider. The 3.3 V Trigger outputs can
+connect directly. Never connect an HC-SR04 Echo pin directly to the FC3.
+
+NEO-6 carrier boards differ: power the module at the voltage printed in its
+own documentation. A bare NEO-6 module is a 3.3 V device; do not assume that a
+carrier accepts 5 V merely because another carrier does.
+
+Connect only the ESC signal and ground leads to the FC3 unless its receiver
+power output has been measured and deliberately included in the power design.
+The proposed ESC is rated for 2S-3S input and 5 A per motor channel. Confirm
+each motor's measured stall current is below that limit before using it.
+
+### Controls and safety
+
+- Pitch drives both tracks forward or reverse; roll adds differential steering.
+- CRSF channel 5 / AUX1 is the arm switch. MadFlight also requires channel 3
+  to be low, and the arm switch must move off then on.
+- The drive and steering controls must be centred at the arm edge. A bad arm
+  attempt requires another off-to-on arm transition.
+- A lost CRSF link neutralizes both ESC outputs after 250 ms. A 500 ms hardware
+  watchdog covers a stalled control loop.
+- Track commands are slew-limited and cross neutral for 150 ms before changing
+  direction.
+
+The firmware starts every boot with neutral ESC outputs. Even so, do the first
+power-up with the tracks raised clear of the bench and an accessible battery
+disconnect. If a track runs backward, swap that motor's two power leads or
+change its `kLeftEscReversed`/`kRightEscReversed` constant in
+`firmware/src/main.cpp`.
+
+### RGB status LED
+
+The FC3v2 RGB LED provides a hardware-only safety indication when the serial
+console is unavailable:
+
+| Colour | Pattern | Meaning and required response |
+| --- | --- | --- |
+| Blue | Steady during startup | MadFlight is configuring hardware; wait for startup to finish. |
+| Off | Briefly during startup | Gyro calibration is running; keep the vehicle completely still. |
+| Green | Steady | Firmware is ready and track output is not armed. |
+| Red | Steady | Manual drive is armed and track commands can move the vehicle. |
+| Orange (`#FF6000`) | Steady | CRSF failsafe is active and both tracks are commanded neutral; restore and verify the receiver link before rearming. |
+| Dark orange (`#FF8C00`) | Rapid blink | MadFlight stopped on a fatal initialization error and disabled outputs; inspect the serial error before power-cycling. |
+
+The two orange indications can look similar on the physical LED, so use the
+pattern: steady means failsafe, while rapid blinking means a fatal panic.
+
+### Build, flash, and inspect
+
+The tasks pin PlatformIO, Arduino-Pico, and MadFlight versions:
+
+```bash
+mise run madflight-test
+mise run madflight-build
+mise run madflight-flash
+mise run madflight-monitor
+```
+
+`madflight-flash` builds first and then uploads over USB. The UF2 produced by a
+plain build is `firmware/.pio/build/madflight-fc3v2/firmware.uf2`.
+
+MadFlight auto-detects the NEO-6 startup baud rate and configures u-blox binary
+messages. Take it outside with a clear view of the sky for the first fix. GPS,
+battery, attitude, altitude, and mode use normal CRSF telemetry. The four
+ranges use project-private CRSF frame type `0x7C`; the ESPHome bridge preserves
+the frame and this TUI decodes it as front, back, left, and right distances.
+The ultrasonic sensors are triggered sequentially to reduce cross-talk.
+
+### Browser serial console
+
+The dependency-free dashboard in `web/` connects directly to the FC3 USB
+serial port through the browser. It provides the raw interactive CLI, parsed
+drive state, CRSF status, four directional ranges, GPS, board sensors, safe
+diagnostic buttons, command history, and downloadable logs.
+
+The private hosted console is available at
+<https://saili-tank-console.james357011.chatgpt.site>.
+
+Start it locally:
+
+```bash
+mise run tank-console
+```
+
+Open `http://localhost:8080` in desktop Chrome or Edge, select **Connect USB**,
+and choose the FC3 serial device. Web Serial requires a secure context;
+localhost qualifies. Safari and Firefox do not currently expose Web Serial.
+After connecting, the dashboard enables all live CRSF, channel, GPS, barometer,
+battery, and attitude streams shown in the UI.
+
+The dashboard never sends an arm or motor command. Its primary buttons only
+toggle MadFlight print streams or run read-only checks. The expert command
+field can send any CLI command, so commands that reboot, save, reset,
+calibrate, take over a UART, or attempt a motor test require confirmation.
+
 ## Wi-Fi to MadFlight FC3 bridge
 
 `esphome/madflight_rc_bridge.yaml` turns an ESP32 into a Wi-Fi-controlled CRSF
@@ -186,14 +314,13 @@ failsafe path before powering motors.
 
 ### Hardware
 
-The default configuration targets a classic ESP32 DevKit and uses GPIO17 for
-CRSF transmit and GPIO16 for receive. Change the `esp32_board`, `crsf_tx_pin`,
-and `crsf_rx_pin` substitutions at the top of the YAML if your board is
-different.
+The default configuration targets an ESP32-C3 and uses GPIO21 for CRSF
+transmit and GPIO20 for receive. Change the `esp32_board`, `crsf_tx_pin`, and
+`crsf_rx_pin` substitutions at the top of the YAML if your board is different.
 
 ```text
-ESP32 GPIO17 / TX  ──> FC3 GPIO1 / SER0_RX   controller frames
-ESP32 GPIO16 / RX <──  FC3 GPIO0 / SER0_TX   telemetry
+ESP32-C3 GPIO21 / TX  ──> FC3 GPIO1 / SER0_RX   controller frames
+ESP32-C3 GPIO20 / RX <──  FC3 GPIO0 / SER0_TX   telemetry
 ESP32 GND          ─── FC3 GND
 ```
 
@@ -312,6 +439,7 @@ The Rust application subscribes to that stream and decodes:
 | Flight mode | Current mode name |
 | Vario and barometer | Vertical speed, altitude, pressure, temperature |
 | Magnetometer | X, Y, Z field values |
+| Directional range | Front, back, left, and right distance |
 
 Heartbeat, device-info, and MSP-response frames are identified. Unknown valid
 frame types are retained and shown as raw hexadecimal data instead of being

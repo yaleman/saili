@@ -14,7 +14,49 @@ depends = ["cargo-fmt"]
 run = "cargo test --quiet"
 
 [tasks.check]
-depends = ["ruff", "ty", "clippy", "cargo-test"]
+depends = ["ruff", "ty", "clippy", "cargo-test", "madflight-test", "madflight-build", "tank-console-test"]
+
+[tasks.tank-console]
+description = "Serve the Web Serial tank console on localhost"
+run = "python3 -m http.server 8080 --directory web"
+
+[tasks.tank-console-test]
+description = "Test the Web Serial telemetry parser"
+run = "node --test web/tests/*.test.mjs"
+
+[tasks.tank-console-build]
+description = "Build the dependency-free Web Serial console"
+depends = ["tank-console-test"]
+run = "python3 web/build.py"
+
+[tasks.madflight-test]
+description = "Run native tests for the MadFlight tank control logic"
+env.UV_TOOL_DIR = "{{config_root}}/.uv-tools"
+env.PLATFORMIO_CORE_DIR = "{{config_root}}/.platformio"
+run = "uvx --from platformio==6.1.19 pio test -e native"
+dir = "firmware"
+
+[tasks.madflight-build]
+description = "Build the MadFlight FC3v2 tank firmware"
+env.UV_TOOL_DIR = "{{config_root}}/.uv-tools"
+env.PLATFORMIO_CORE_DIR = "{{config_root}}/.platformio"
+run = "uvx --from platformio==6.1.19 pio run -e madflight-fc3v2"
+dir = "firmware"
+
+[tasks.madflight-flash]
+description = "Build and flash the MadFlight FC3v2 tank firmware over USB"
+depends = ["madflight-build"]
+env.UV_TOOL_DIR = "{{config_root}}/.uv-tools"
+env.PLATFORMIO_CORE_DIR = "{{config_root}}/.platformio"
+run = "uvx --from platformio==6.1.19 pio run -e madflight-fc3v2 --target upload"
+dir = "firmware"
+
+[tasks.madflight-monitor]
+description = "Open the MadFlight FC3v2 USB serial diagnostics"
+env.UV_TOOL_DIR = "{{config_root}}/.uv-tools"
+env.PLATFORMIO_CORE_DIR = "{{config_root}}/.platformio"
+run = "uvx --from platformio==6.1.19 pio device monitor --baud 115200"
+dir = "firmware"
 
 [tasks.betaflight-build]
 env.PICOTOOL = "/opt/homebrew/bin/picotool"

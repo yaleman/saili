@@ -241,6 +241,7 @@ struct FlightControllerTelemetry {
     barometric_altitude_metres: Option<f32>,
     barometer: Option<BarometerTelemetry>,
     magnetometer: Option<MagnetometerTelemetry>,
+    range: Option<RangeTelemetry>,
 }
 
 impl FlightControllerTelemetry {
@@ -319,6 +320,19 @@ impl FlightControllerTelemetry {
                     CrsfTelemetry::FlightMode(mode) => {
                         self.flight_mode = Some(mode);
                     }
+                    CrsfTelemetry::Range {
+                        front_metres,
+                        back_metres,
+                        left_metres,
+                        right_metres,
+                    } => {
+                        self.range = Some(RangeTelemetry {
+                            front_metres,
+                            back_metres,
+                            left_metres,
+                            right_metres,
+                        });
+                    }
                     CrsfTelemetry::Heartbeat
                     | CrsfTelemetry::DeviceInfo
                     | CrsfTelemetry::MspResponse
@@ -372,6 +386,13 @@ struct MagnetometerTelemetry {
     x: i16,
     y: i16,
     z: i16,
+}
+
+struct RangeTelemetry {
+    front_metres: Option<f32>,
+    back_metres: Option<f32>,
+    left_metres: Option<f32>,
+    right_metres: Option<f32>,
 }
 
 fn render(frame: &mut Frame, app: &App) {
@@ -631,10 +652,23 @@ fn render_telemetry(frame: &mut Frame, area: Rect, telemetry: &FlightControllerT
         .as_ref()
         .map(|current| format!("x {}  y {}  z {}", current.x, current.y, current.z))
         .unwrap_or_else(|| "--".to_owned());
+    let range = telemetry
+        .range
+        .as_ref()
+        .map(|current| {
+            format!(
+                "F {}  B {}  L {}  R {}",
+                format_range(current.front_metres),
+                format_range(current.back_metres),
+                format_range(current.left_metres),
+                format_range(current.right_metres)
+            )
+        })
+        .unwrap_or_else(|| "F --  B --  L --  R --".to_owned());
     let environment = telemetry.last_error.as_ref().map_or_else(
         || {
             format!(
-                "baro altitude {barometric_altitude}  •  pressure {barometer}  •  magnetometer {magnetometer}"
+                "range {range}  •  baro {barometric_altitude} {barometer}  •  mag {magnetometer}"
             )
         },
         |error| format!("error {error}"),
@@ -660,6 +694,12 @@ fn render_telemetry(frame: &mut Frame, area: Rect, telemetry: &FlightControllerT
         .block(Block::bordered().title(" FC CRSF telemetry ")),
         area,
     );
+}
+
+fn format_range(range_metres: Option<f32>) -> String {
+    range_metres
+        .map(|current| format!("{current:.2}m"))
+        .unwrap_or_else(|| "--".to_owned())
 }
 
 fn truncate_ascii(mut value: String, maximum: usize) -> String {

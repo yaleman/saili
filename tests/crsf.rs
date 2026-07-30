@@ -1,7 +1,7 @@
 use saili::{
     CRSF_FRAME_TYPE_ATTITUDE, CRSF_FRAME_TYPE_BAROMETRIC_ALTITUDE, CRSF_FRAME_TYPE_BATTERY,
-    CRSF_FRAME_TYPE_FLIGHT_MODE, CRSF_FRAME_TYPE_GPS, CrsfError, CrsfFrame, CrsfTelemetry,
-    crc8_dvb_s2,
+    CRSF_FRAME_TYPE_FLIGHT_MODE, CRSF_FRAME_TYPE_GPS, CRSF_FRAME_TYPE_RANGE, CrsfError, CrsfFrame,
+    CrsfTelemetry, crc8_dvb_s2,
 };
 
 fn make_frame(frame_type: u8, payload: &[u8]) -> Vec<u8> {
@@ -128,4 +128,37 @@ fn decodes_packed_barometric_altitude() {
     };
     assert_eq!(altitude_metres, 20.0);
     assert!((vertical_speed_ms - 1.017).abs() < 0.001);
+}
+
+#[test]
+fn decodes_directional_range_telemetry() {
+    let payload = [
+        0x12, 0xC8, 1, 0b1101, 0x01, 0xF4, 0xFF, 0xFF, 0x04, 0xD2, 0x07, 0xD0,
+    ];
+    let raw = make_frame(CRSF_FRAME_TYPE_RANGE, &payload);
+    let frame = CrsfFrame::try_from(raw.as_slice()).expect("range frame should decode");
+
+    assert_eq!(
+        frame.telemetry().expect("range payload should decode"),
+        CrsfTelemetry::Range {
+            front_metres: Some(0.5),
+            back_metres: None,
+            left_metres: Some(1.234),
+            right_metres: Some(2.0),
+        }
+    );
+}
+
+#[test]
+fn rejects_unknown_range_telemetry_version() {
+    let payload = [
+        0x12, 0xC8, 2, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    ];
+    let raw = make_frame(CRSF_FRAME_TYPE_RANGE, &payload);
+    let frame = CrsfFrame::try_from(raw.as_slice()).expect("range frame should decode");
+
+    assert_eq!(
+        frame.telemetry(),
+        Err(CrsfError::UnsupportedRangeVersion { version: 2 })
+    );
 }

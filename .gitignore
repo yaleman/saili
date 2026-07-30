@@ -13,6 +13,10 @@ wheels/
 # Added by cargo
 
 /target
+/.platformio/
+/.uv-tools/
+/firmware/.pio/
+/web/dist/
 
 # Local ESPHome credentials
 /esphome/secrets.yaml
