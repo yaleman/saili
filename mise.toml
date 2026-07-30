@@ -18,7 +18,54 @@ depends = ["ruff", "ty", "clippy", "cargo-test"]
 
 [tasks.betaflight-build]
 env.PICOTOOL = "/opt/homebrew/bin/picotool"
+env.CONFIG_REVISION_DEFINE = """-D'__CONFIG_REVISION__="revb"'"""
 run = [
-    """make MADFLIGHT_FC3 EXTRA_FLAGS=\"-D'BUILD_KEY=ae04524f2f7bbb8caf15231405c01521' -D'RELEASE_NAME=2025.12.5' -DCLOUD_BUILD -DUSE_ACRO_TRAINER -DUSE_GPS -DUSE_GPS_PLUS_CODES -DUSE_LED_STRIP -DUSE_OPTICALFLOW -DUSE_OSD_HD -DUSE_PINIO -DUSE_PWM_OUTPUT -DUSE_RANGEFINDER -DUSE_SERIALRX -DUSE_SERIALRX_CRSF -DUSE_TELEMETRY -DUSE_TELEMETRY_CRSF -DUSE_VTX\"""",
+    "make clean",
+    "make MADFLIGHT_FC3",
 ]
+dir = "betaflight"
+
+[tasks.betaflight-flash]
+depends = ["betaflight-build"]
+env.PICOTOOL = "/opt/homebrew/bin/picotool"
+run = '''
+set -eu
+
+command -v tio >/dev/null
+test -x "$PICOTOOL"
+
+set -- /dev/cu.usbmodem*
+if [ "$#" -ne 1 ] || [ ! -e "$1" ]; then
+    echo "Expected exactly one Betaflight serial device at /dev/cu.usbmodem*" >&2
+    exit 1
+fi
+serial_port="$1"
+
+set -- obj/betaflight_*_RP2350B_MADFLIGHT_FC3.uf2
+if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+    echo "Expected exactly one MADFLIGHT_FC3 UF2 in betaflight/obj" >&2
+    exit 1
+fi
+firmware="$1"
+
+tio --baudrate 115200 --no-reconnect --mute --script-run once \
+    --script 'write("#\r"); assert(expect("Entering CLI Mode", 3000) == 1, "CLI did not respond"); write("bl\r"); assert(expect("restarting in ROM bootloader mode", 3000) == 1, "bootloader command failed")' \
+    "$serial_port" || true
+
+bootloader_ready=false
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if "$PICOTOOL" info >/dev/null 2>&1; then
+        bootloader_ready=true
+        break
+    fi
+    sleep 0.25
+done
+
+if [ "$bootloader_ready" != true ]; then
+    echo "RP2350 bootloader did not appear" >&2
+    exit 1
+fi
+
+"$PICOTOOL" load --verify --execute "$firmware"
+'''
 dir = "betaflight"
