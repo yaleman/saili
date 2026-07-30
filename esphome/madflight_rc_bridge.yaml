@@ -1,39 +1,47 @@
+# Board: Generic ESP32-C3 Board (Generic)
+# Definition: definitions/boards/generic-esp32c3/manifest.yaml
+
 substitutions:
   device_name: madflight-rc-bridge
   friendly_name: MadFlight RC Bridge
-  esp32_board: esp32dev
-  crsf_tx_pin: GPIO17
-  crsf_rx_pin: GPIO16
+  esp32_board: esp32c3
+  crsf_tx_pin: GPIO21
+  crsf_rx_pin: GPIO20
 
 esphome:
   name: ${device_name}
   friendly_name: ${friendly_name}
-  comment: Wi-Fi to CRSF bridge for bench-testing a MadFlight FC3
+  on_boot:
+    priority: -100
+    then:
+      - lambda: |-
+          id(oled).turn_off();
 
 esp32:
-  board: ${esp32_board}
+  variant: esp32c3
   framework:
     type: esp-idf
 
 logger:
-  level: INFO
+
+ota:
+  - platform: esphome
 
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
   ap:
-    ssid: "${friendly_name} Setup"
+    ssid: MadFlight RC Br Fallback Hotspot
     password: !secret fallback_ap_password
+  power_save_mode: none
+  output_power: 8.5dB
 
 captive_portal:
-
-ota:
-  - platform: esphome
-    password: !secret ota_password
 
 api:
   encryption:
     key: !secret api_encryption_key
+
   actions:
     - action: set_rc_channels
       supports_response: status
@@ -397,3 +405,17 @@ sensor:
         return NAN;
       }
       return millis() - id(last_command_ms);
+
+i2c:
+  sda: GPIO5
+  scl: GPIO6
+  scan: true
+  id: oled_bus
+
+display:
+  - platform: ssd1306_i2c
+    id: oled
+    i2c_id: oled_bus
+    model: "SSD1306 72x40"
+    address: 0x3C
+    update_interval: never
