@@ -277,10 +277,16 @@ The ultrasonic sensors are triggered sequentially to reduce cross-talk.
 The dependency-free dashboard in `web/` connects directly to the FC3 USB
 serial port through the browser. It provides the raw interactive CLI, parsed
 drive state, CRSF status, four directional ranges, GPS, board sensors, safe
-diagnostic buttons, command history, and downloadable logs.
+diagnostic buttons, command history, and downloadable logs. The serial console
+has an enabled-by-default **Auto-scroll** option and a disabled-by-default
+**Show TANK state rows** option; leaving the latter disabled hides the frequent
+`TANK state:` telemetry rows without affecting parsing or downloaded logs.
 
 The hosted console is published from `main` by GitHub Actions at
 <https://yaleman.github.io/saili/>.
+
+See [`web/README.md`](web/README.md) for the complete console control,
+testing, and build reference.
 
 Start it locally:
 
@@ -293,6 +299,11 @@ and choose the FC3 serial device. Web Serial requires a secure context;
 localhost qualifies. Safari and Firefox do not currently expose Web Serial.
 After connecting, the dashboard enables all live CRSF, channel, GPS, barometer,
 battery, and attitude streams shown in the UI.
+
+If the page was already open while the console changed, reload it before
+connecting so the HTML and JavaScript assets are from the same build. If
+**Connect USB** is disabled, check that the page is being served from
+`localhost` or HTTPS in a supported desktop browser.
 
 The dashboard never sends an arm or motor command. Its primary buttons only
 toggle MadFlight print streams or run read-only checks. The expert command

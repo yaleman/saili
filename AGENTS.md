@@ -9,6 +9,7 @@ A Rust TUI application for reading SAILI Simulator - PhoenixRC Controllers. Work
 - Library entry: `src/lib.rs` - provides `SailiDevice::connect()` for programmatic access to the adapter
 - TUI entry: `src/main.rs` -> `src/app.rs::App::run()` - contains the live terminal UI
 - Diagnostics: `read_saili.py` - Python script for adapter testing
+- Web console: `web/index.html` and `web/app.mjs` - browser-based FC3 serial diagnostics
 
 ## Commands
 
@@ -16,6 +17,8 @@ A Rust TUI application for reading SAILI Simulator - PhoenixRC Controllers. Work
 - `cargo run --release` - Build and run the TUI application
 - `cargo build` - Build library and binaries (Debug mode)
 - `cargo test` - Run library and protocol tests
+- `mise run tank-console` - Serve the Web Serial console locally
+- `mise run tank-console-build` - Test and build the dependency-free console
 
 ### Test & Verify
 - `mise check` - Run all checks (lint, typecheck, test)
@@ -90,6 +93,12 @@ A Rust TUI application for reading SAILI Simulator - PhoenixRC Controllers. Work
 **Library/API code**: `src/lib.rs` - maintains public API
 **Application**: `src/app.rs` - UI and main logic  
 **Diagnostics**: `read_saili.py` - lightweight Python debugging
+**Web console**: `web/` - browser UI, telemetry parser, and console tests
+
+The web console hides `TANK state:` rows by default through the unchecked
+**Show TANK state rows** control. The filter only affects terminal display;
+parsing and downloaded logs still include those rows. See `web/README.md` for
+the local workflow and build details.
 
 ## Generated/Build Artifacts
 
