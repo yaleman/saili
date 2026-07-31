@@ -14,10 +14,19 @@ depends = ["cargo-fmt"]
 run = "cargo test --quiet"
 
 [tasks.check]
-depends = ["ruff", "ty", "clippy", "cargo-test", "madflight-test", "madflight-build", "tank-console-test"]
+depends = [
+    "ruff",
+    "ty",
+    "clippy",
+    "cargo-test",
+    "madflight-test",
+    "madflight-build",
+    "tank-console-test",
+]
 
 [tasks.tank-console]
 description = "Serve the Web Serial tank console on localhost"
+depends = ["tank-console-build"]
 run = "python3 -m http.server 8080 --directory web"
 
 [tasks.tank-console-test]
@@ -61,10 +70,7 @@ dir = "firmware"
 [tasks.betaflight-build]
 env.PICOTOOL = "/opt/homebrew/bin/picotool"
 env.CONFIG_REVISION_DEFINE = """-D'__CONFIG_REVISION__="revb"'"""
-run = [
-    "make clean",
-    "make MADFLIGHT_FC3",
-]
+run = ["make clean", "make MADFLIGHT_FC3"]
 dir = "betaflight"
 
 [tasks.betaflight-flash]

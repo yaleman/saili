@@ -22,6 +22,62 @@
           </div>
         </div>
         <div class="connection-controls">
+        <article class="panel led-panel">
+            <div class="panel-heading">
+              <span id="led-current" class="led-current unknown">
+                <i aria-hidden="true"></i>
+                <span id="led-current-label">UNKNOWN</span>
+              </span>
+              <div class="heading-with-help">
+                <div class="help-popover">
+                  <button
+                    class="help-trigger"
+                    type="button"
+                    aria-label="Why the RGB status LED matters"
+                    aria-describedby="led-explainer"
+                  >(?)</button>
+                  <div id="led-explainer" class="help-bubble" role="tooltip">
+                    <p>
+                      The LED is the quickest hardware-only safety check when
+                      the console is unavailable. Treat red or any orange as
+                      hands-off; green only confirms that firmware has not
+                      armed track output, not that electrical power is safe.
+                      The current colour shown here is inferred from telemetry,
+                      not read back from the LED.
+                    </p>
+                    <ul class="led-legend" aria-label="FC3 RGB LED colour meanings">
+                      <li data-led-state="startup">
+                        <i class="led-swatch blue" aria-hidden="true"></i>
+                        <div><strong>Blue</strong><span>Starting and configuring hardware</span></div>
+                      </li>
+                      <li data-led-state="calibration">
+                        <i class="led-swatch off" aria-hidden="true"></i>
+                        <div><strong>Off at startup</strong><span>Gyro calibration; keep the vehicle still</span></div>
+                      </li>
+                      <li data-led-state="safe">
+                        <i class="led-swatch green" aria-hidden="true"></i>
+                        <div><strong>Green</strong><span>Ready, but track output is not armed</span></div>
+                      </li>
+                      <li data-led-state="armed">
+                        <i class="led-swatch red" aria-hidden="true"></i>
+                        <div><strong>Red</strong><span>Armed; track commands can move the vehicle</span></div>
+                      </li>
+                      <li data-led-state="failsafe">
+                        <i class="led-swatch orange" aria-hidden="true"></i>
+                        <div><strong>Orange</strong><span>CRSF failsafe; tracks are commanded neutral</span></div>
+                      </li>
+                      <li data-led-state="panic">
+                        <i class="led-swatch dark-orange blink" aria-hidden="true"></i>
+                        <div><strong>Blinking dark orange</strong><span>Fatal initialization error; inspect the serial message</span></div>
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </article>
+
+
           <div class="connection-copy">
             <span id="connection-dot" class="status-dot"></span>
             <span id="connection-status">Disconnected</span>
@@ -38,11 +94,11 @@
         from localhost or HTTPS.
       </div>
 
-      <div class="safety-strip" role="note">
+      <!-- <div class="safety-strip" role="note">
         <span class="safety-label">BENCH MODE</span>
         <span>Connecting and diagnostic buttons never arm the vehicle.</span>
         <span>Keep tracks raised and the battery disconnect accessible.</span>
-      </div>
+      </div> -->
 
       <main>
         <section class="overview-grid" aria-label="Live telemetry">
@@ -159,61 +215,7 @@
             </div>
           </article>
 
-          <article class="panel led-panel">
-            <div class="panel-heading">
-              <div class="heading-with-help">
-                <h2>FC3 RGB status LED</h2>
-                <div class="help-popover">
-                  <button
-                    class="help-trigger"
-                    type="button"
-                    aria-label="Why the RGB status LED matters"
-                    aria-describedby="led-explainer"
-                  >(?)</button>
-                  <div id="led-explainer" class="help-bubble" role="tooltip">
-                    <p>
-                      The LED is the quickest hardware-only safety check when
-                      the console is unavailable. Treat red or any orange as
-                      hands-off; green only confirms that firmware has not
-                      armed track output, not that electrical power is safe.
-                      The current colour shown here is inferred from telemetry,
-                      not read back from the LED.
-                    </p>
-                    <ul class="led-legend" aria-label="FC3 RGB LED colour meanings">
-                      <li data-led-state="startup">
-                        <i class="led-swatch blue" aria-hidden="true"></i>
-                        <div><strong>Blue</strong><span>Starting and configuring hardware</span></div>
-                      </li>
-                      <li data-led-state="calibration">
-                        <i class="led-swatch off" aria-hidden="true"></i>
-                        <div><strong>Off at startup</strong><span>Gyro calibration; keep the vehicle still</span></div>
-                      </li>
-                      <li data-led-state="safe">
-                        <i class="led-swatch green" aria-hidden="true"></i>
-                        <div><strong>Green</strong><span>Ready, but track output is not armed</span></div>
-                      </li>
-                      <li data-led-state="armed">
-                        <i class="led-swatch red" aria-hidden="true"></i>
-                        <div><strong>Red</strong><span>Armed; track commands can move the vehicle</span></div>
-                      </li>
-                      <li data-led-state="failsafe">
-                        <i class="led-swatch orange" aria-hidden="true"></i>
-                        <div><strong>Orange</strong><span>CRSF failsafe; tracks are commanded neutral</span></div>
-                      </li>
-                      <li data-led-state="panic">
-                        <i class="led-swatch dark-orange blink" aria-hidden="true"></i>
-                        <div><strong>Blinking dark orange</strong><span>Fatal initialization error; inspect the serial message</span></div>
-                      </li>
-                    </ul>
-                  </div>
-                </div>
-              </div>
-              <span id="led-current" class="led-current unknown">
-                <i aria-hidden="true"></i>
-                <span id="led-current-label">UNKNOWN</span>
-              </span>
-            </div>
-          </article>
+
         </section>
 
         <section class="panel diagnostics-panel">
@@ -260,6 +262,10 @@
               <label class="checkbox">
                 <input id="autoscroll" type="checkbox" checked>
                 Auto-scroll
+              </label>
+              <label class="checkbox">
+                <input id="show-tank-state" type="checkbox">
+                Show TANK state rows
               </label>
               <button id="download-log" class="text-button" type="button">Download</button>
               <button id="clear-log" class="text-button" type="button">Clear</button>

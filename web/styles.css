@@ -24,12 +24,15 @@
 
 body {
   margin: 0;
+  padding: 0;
   min-width: 320px;
   min-height: 100vh;
   background:
     radial-gradient(circle at 15% -10%, rgb(55 103 65 / 18%), transparent 34rem),
     var(--background);
   color: var(--text);
+  overflow-x: hidden;
+  overflow-y: scroll;
 }
 
 button,
@@ -54,7 +57,7 @@ a {
   align-items: center;
   justify-content: space-between;
   gap: 24px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 0;
 }
 
 .brand,
@@ -947,6 +950,7 @@ dialog p:not(.eyebrow) {
     align-items: flex-start;
     flex-direction: column;
     padding: 16px 0;
+    margin-bottom: 0.1rem;
   }
 
   .connection-controls {
@@ -1009,4 +1013,8 @@ dialog p:not(.eyebrow) {
   .led-swatch.blink {
     animation: none;
   }
+}
+
+.hidden {
+  display: none;
 }

@@ -59,6 +59,7 @@ const elements = Object.fromEntries(
     "last-update",
     "terminal-output",
     "autoscroll",
+    "show-tank-state",
     "download-log",
     "clear-log",
     "command-form",
@@ -138,7 +139,10 @@ function appendTerminal(line, kind = "serial") {
   }
 
   const row = document.createElement("div");
-  row.className = `terminal-line ${kind}`;
+  const isTankState = line.trimStart().startsWith("TANK state:");
+  row.className = `terminal-line ${kind}${isTankState ? " tank-state" : ""}`;
+  row.hidden =
+    isTankState && !(elements["show-tank-state"]?.checked ?? false);
   const time = entry.timestamp.toLocaleTimeString([], {
     hour12: false,
     hour: "2-digit",
@@ -412,10 +416,13 @@ function renderTelemetry() {
       `https://www.openstreetmap.org/?mlat=${gps.latitude}&mlon=${gps.longitude}` +
       `#map=18/${gps.latitude}/${gps.longitude}`;
     elements["map-link"].classList.remove("disabled");
+    elements["map-link"].classList.remove("hidden");
     elements["map-link"].setAttribute("aria-disabled", "false");
   } else {
-    elements["map-link"].href = "#";
+    elements["map-link"].href = "#no-gps-fix";
+    elements["map-link"].hidden = true;
     elements["map-link"].classList.add("disabled");
+    elements["map-link"].classList.add("hidden");
     elements["map-link"].setAttribute("aria-disabled", "true");
   }
 
@@ -513,6 +520,12 @@ elements["clear-log"].addEventListener("click", () => {
   logLines = [];
   elements["terminal-output"].replaceChildren();
   appendTerminal("Console cleared.", "local");
+});
+
+elements["show-tank-state"]?.addEventListener("change", () => {
+  for (const row of elements["terminal-output"].querySelectorAll(".tank-state")) {
+    row.hidden = !elements["show-tank-state"].checked;
+  }
 });
 
 elements["download-log"].addEventListener("click", () => {
