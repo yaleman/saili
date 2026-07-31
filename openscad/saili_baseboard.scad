@@ -37,11 +37,18 @@ esp32_usb_clearance = [9.0, 5.0]; // editable envelope for the side USB connecto
 // ---------- GPS antenna ----------
 antenna_size = [25.0, 25.0];
 
+// Horizontal edge-to-edge clearances between the modules. The GPS-to-antenna
+// gap is intentionally large for antenna separation and cable routing.
+esp32_gps_gap = 10.0;
+gps_antenna_gap = 15.0;
+
 // Modules sit on the pin-array side of the FC3. The USB edges of the FC3 and
 // ESP32 both face -X. The GPS antenna is in line with the GPS board.
-esp32_center = [-35.0, -52.0];
 gps_center = [0.0, -52.0];
-antenna_center = [32.0, -52.0];
+esp32_center = [gps_center[0] - gps_size[0] / 2 - esp32_size[0] / 2 - esp32_gps_gap,
+                gps_center[1]];
+antenna_center = [gps_center[0] + gps_size[0] / 2 + antenna_size[0] / 2 + gps_antenna_gap,
+                  gps_center[1]];
 
 // Set true for a translucent layout preview in OpenSCAD; reference geometry
 // is never included in the exported plate when this is false.

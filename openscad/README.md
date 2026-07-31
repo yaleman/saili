@@ -12,7 +12,9 @@ on the `-Y` side, from left to right.
 
 The ESP32 USB connector faces `-X`, matching the FC3 USB direction. Its two
 tie-down slots are outside the long edges and do not occupy the USB edge. The
-antenna has one slot on every side for independent X/Y retention.
+antenna has one slot on every side for independent X/Y retention. The default
+edge clearance is 10 mm between the ESP32 and GPS boards, and 15 mm between
+the GPS board and antenna.
 
 ## Printing
 
@@ -28,8 +30,9 @@ The most important parameters are at the top of the SCAD file:
 
 - `gps_mount_spacing`: assumed to be 30 x 20 mm from the supplied reference.
 - `esp32_size` and `esp32_usb_clearance`: adjust to the actual ESP32-C3 board.
-- `esp32_center`, `gps_center`, and `antenna_center`: adjust the layout or
-  increase wiring clearance.
+- `esp32_gps_gap` and `gps_antenna_gap`: adjust horizontal module spacing.
+- `gps_center`: adjust the module row position; the other module positions are
+  derived from the configured gaps.
 - `hole_clearance`, `tie_slot_width`, and `tie_slot_length`: adjust for the
   printer, hardware, or chosen zip ties.
 
