@@ -57,7 +57,7 @@ fn applies_primary_channel_selection_and_inversion() {
     assert_eq!(channels.pitch(), RC_MID_US);
     assert_eq!(channels.throttle(), 1755);
     assert_eq!(channels.yaw(), RC_MIN_US);
-    assert!(!channels.armed());
+    assert!(channels.armed());
 }
 
 #[test]

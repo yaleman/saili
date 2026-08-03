@@ -4,7 +4,7 @@ Read the raw control packets produced by a FeiYing/SAILI PhoenixRC USB
 simulator adapter (`1781:0898`) on macOS.
 
 The adapter emits eight-byte packets containing seven analogue values and one
-digital switch value. The Rust application provides a live terminal UI, while
+digital/auxiliary byte. The Rust application provides a live terminal UI, while
 `read_saili.py` remains available as a lightweight diagnostic reader.
 
 ![first image](image1.jpg)
@@ -93,21 +93,47 @@ cargo run --release -- --esphome-address 192.0.2.10:6053
 ```
 
 The interface shows all seven raw inputs, the mapped roll, pitch, throttle,
-yaw, and arm states, ESPHome connection state, command counts, round-trip
+yaw, and arm output states, ESPHome connection state, command counts, round-trip
 time, whether the bridge is receiving live or safe values, and decoded
 telemetry returned by the flight controller. The telemetry panel retains the
 latest battery, attitude, GPS, flight-mode, vario, barometer, and magnetometer
 values along with the most recent raw CRSF frame.
 
-Output starts in **SAFE HOLD**. With the controller reporting fresh input,
-throttle low, and the arm switch off, press `l` to enable live forwarding.
+Output starts in **SAFE HOLD**. With the controller reporting fresh input and
+throttle low, press `l` to enable live forwarding. A live connected controller
+is treated as the arm request; SAFE HOLD and link loss force channel 5 low.
 Press `l` again to return to safe hold. Press `q`, Escape, or Control-C to send
 safe values and exit.
 
-The default primary mapping is raw channels 1-4 to AETR. The adapter's digital
-switch controls CRSF channel 5 (`aux1`, normally arm); remaining analogue
-inputs populate later auxiliary channels. Learn the actual raw ordering by
-moving one control at a time, then override the mapping or direction as needed:
+The default mapping sends raw channels 1-4 to AETR and raw channels 5-7 to
+AUX2-AUX4. CRSF channel 5 (`aux1`, normally arm) follows the live/safe output
+state; the adapter's mode selectors are not controller inputs. Press `m` in
+the TUI to map all seven raw analogue inputs explicitly to ROLL, PITCH,
+THROTTLE, YAW, AUX2, AUX3, and AUX4. Use the arrow keys to select an output
+and input, `i` to invert it, `Enter` to save, or `Esc` to cancel. Every input
+must be assigned once.
+
+The raw HID report layout is:
+
+| Byte | Meaning |
+| ---: | --- |
+| 0 | Analogue input 1, value 0-255 |
+| 1 | Digital/auxiliary byte; fixed on the observed adapter and not one of the mode selectors |
+| 2 | Analogue input 2, value 0-255 |
+| 3 | Analogue input 3, value 0-255 |
+| 4 | Analogue input 4, value 0-255 |
+| 5 | Analogue input 5, value 0-255 |
+| 6 | Analogue input 6, value 0-255 |
+| 7 | Analogue input 7, value 0-255 |
+
+The two SAILI case switches select adapter mode/protocol and do not change
+the HID report. They cannot be mapped as controller switches. A missing HID
+interface no longer prevents the TUI from starting; input panels remain
+empty while ESPHome status and configuration remain available.
+
+The default mapping can still be overridden at startup. Learn the actual raw
+ordering by moving one control at a time, then override the mapping or
+direction as needed:
 
 ```bash
 cargo run --release -- \
@@ -127,7 +153,7 @@ transmit-rate options.
 
 - `SailiDevice::connect()` discovers and opens `1781:0898` through HIDAPI.
 - `SailiDevice::read_state()` returns the typed `ReadStatus` result.
-- `DeviceState` exposes the seven channels, digital switch, and raw report.
+- `DeviceState` exposes the seven channels, raw digital/auxiliary byte, and raw report.
 - `SailiError` and `PacketError` distinguish discovery, open, read, and
   malformed-report failures.
 - `RcMapping` converts adapter reports to 16 bounded RC channel values.
@@ -219,8 +245,8 @@ each motor's measured stall current is below that limit before using it.
 ### Controls and safety
 
 - Pitch drives both tracks forward or reverse; roll adds differential steering.
-- CRSF channel 5 / AUX1 is the arm switch. MadFlight also requires channel 3
-  to be low, and the arm switch must move off then on.
+- CRSF channel 5 / AUX1 is driven high when live forwarding is enabled and low
+  in safe hold. MadFlight also requires channel 3 to be low when arming.
 - The drive and steering controls must be centred at the arm edge. A bad arm
   attempt requires another off-to-on arm transition.
 - A lost CRSF link neutralizes both ESC outputs after 250 ms. A 500 ms hardware

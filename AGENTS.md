@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-A Rust TUI application for reading SAILI Simulator - PhoenixRC Controllers. Works with the USB adapter (VID: 0x1781, PID: 0x0898) to read 7 analogue channels and 1 digital switch from Turnigy TGY 9X transmitters.
+A Rust TUI application for reading SAILI Simulator - PhoenixRC Controllers. Works with the USB adapter (VID: 0x1781, PID: 0x0898) to read 7 analogue channels plus one digital/auxiliary byte from Turnigy TGY 9X transmitters. The two case selectors choose adapter mode/protocol; they are not HID inputs.
 
 ## Key Entry Points
 
@@ -41,7 +41,9 @@ A Rust TUI application for reading SAILI Simulator - PhoenixRC Controllers. Work
 - Main runs `app::run()` with continuous device polling
 - Polls device every 10ms, redraws UI every 40ms
 - Exits on 'q', Escape, or Ctrl-C
-- Shows channel gauges, switch status, raw packet bytes
+- Shows seven channel gauges, mapping status, raw packet bytes, and live/safe output state
+- Starts without the HID adapter so ESPHome status and the mapping modal remain usable
+- Press `m` to map all seven analogue inputs to ROLL, PITCH, THROTTLE, YAW, AUX2, AUX3, and AUX4
 
 ## Dependencies & Path
 
@@ -55,9 +57,15 @@ A Rust TUI application for reading SAILI Simulator - PhoenixRC Controllers. Work
 
 **Protocol tests** (`tests/protocol.rs`):
 - Tests packet decoding with `[10, 1, 20, 30, 40, 50, 60, 70]` data
-- Channel byte indices are non-standard: [0, 2, 3, 4, 5, 6, 7]
-- Digital switch is determined by byte index 1 (`!= 0`)
+- Analogue channel byte indices are non-standard: [0, 2, 3, 4, 5, 6, 7]
+- Byte index 1 is retained as a raw digital/auxiliary value, but is not treated as a physical arm switch
 - Short reports rejected with `PacketError::UnexpectedLength`
+
+**HID report contract**:
+- Reports are exactly 8 bytes: seven 0-255 analogue inputs at bytes 0, 2-7, plus byte 1
+- The SAILI case selectors do not change HID reports; they only select adapter mode/protocol
+- The TUI mapping modal explicitly maps all seven analogue inputs to four primary outputs and AUX2-AUX4
+- CRSF AUX1/channel 5 is controlled by live/safe state: high while live, low in safe hold or failsafe
 
 **Hardware requirements**:
 - Physical SAILI adapter required for integration tests

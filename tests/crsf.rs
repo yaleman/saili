@@ -131,6 +131,23 @@ fn decodes_packed_barometric_altitude() {
 }
 
 #[test]
+fn decodes_four_byte_barometric_altitude() {
+    let raw = make_frame(
+        CRSF_FRAME_TYPE_BAROMETRIC_ALTITUDE,
+        &[0x27, 0xD8, 0x00, 0x96],
+    );
+    let frame = CrsfFrame::try_from(raw.as_slice()).expect("barometric altitude should decode");
+
+    assert_eq!(
+        frame.telemetry(),
+        Ok(CrsfTelemetry::BarometricAltitude {
+            altitude_metres: 20.0,
+            vertical_speed_ms: 1.5,
+        })
+    );
+}
+
+#[test]
 fn decodes_directional_range_telemetry() {
     let payload = [
         0x12, 0xC8, 1, 0b1101, 0x01, 0xF4, 0xFF, 0xFF, 0x04, 0xD2, 0x07, 0xD0,
@@ -160,5 +177,16 @@ fn rejects_unknown_range_telemetry_version() {
     assert_eq!(
         frame.telemetry(),
         Err(CrsfError::UnsupportedRangeVersion { version: 2 })
+    );
+}
+
+#[test]
+fn ignores_standard_msp_write_frames_using_the_private_range_type() {
+    let raw = make_frame(0x7C, &[0x01, 0x02, 0x03, 0x04]);
+    let frame = CrsfFrame::try_from(raw.as_slice()).expect("MSP write frame should decode");
+
+    assert_eq!(
+        frame.telemetry(),
+        Ok(CrsfTelemetry::Unknown { frame_type: 0x7C })
     );
 }

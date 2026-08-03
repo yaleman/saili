@@ -99,17 +99,31 @@ impl CrsfFrame {
                 })
             }
             CRSF_FRAME_TYPE_BAROMETRIC_ALTITUDE => {
-                require_payload(self, 3)?;
+                if self.payload.len() != 3 && self.payload.len() != 4 {
+                    return Err(CrsfError::PayloadLength {
+                        frame_type: self.frame_type,
+                        expected: 3,
+                        actual: self.payload.len(),
+                    });
+                }
                 let packed_altitude = read_u16(&self.payload[0..2]);
                 let altitude_metres = if packed_altitude & 0x8000 == 0 {
                     (f32::from(packed_altitude) - 10_000.0) / 10.0
                 } else {
                     f32::from(packed_altitude & 0x7FFF)
                 };
-                let packed_vertical_speed = self.payload[2] as i8;
-                let direction = f32::from(packed_vertical_speed.signum());
-                let vertical_speed_ms = direction
-                    * (f32::exp(f32::from(packed_vertical_speed.unsigned_abs()) * 0.026) - 1.0);
+                let vertical_speed_ms = if self.payload.len() == 4 {
+                    // ExpressLRS uses the four-byte form: the same packed
+                    // altitude followed by signed vertical speed in cm/s.
+                    f32::from(read_i16(&self.payload[2..4])) / 100.0
+                } else {
+                    // TBS/Betaflight use a logarithmically packed, one-byte
+                    // vertical speed after the packed altitude.
+                    let packed_vertical_speed = self.payload[2] as i8;
+                    let direction = f32::from(packed_vertical_speed.signum());
+                    direction
+                        * (f32::exp(f32::from(packed_vertical_speed.unsigned_abs()) * 0.026) - 1.0)
+                };
                 Ok(CrsfTelemetry::BarometricAltitude {
                     altitude_metres,
                     vertical_speed_ms,
@@ -152,6 +166,16 @@ impl CrsfFrame {
             CRSF_FRAME_TYPE_DEVICE_INFO => Ok(CrsfTelemetry::DeviceInfo),
             CRSF_FRAME_TYPE_MSP_RESPONSE => Ok(CrsfTelemetry::MspResponse),
             CRSF_FRAME_TYPE_RANGE => {
+                // 0x7C is CRSF MSP_WRITE in the standard protocol. The tank
+                // firmware uses it for its private range frame, so only
+                // classify frames with the private range header as range
+                // telemetry. Other valid 0x7C frames must not become payload
+                // errors merely because they are not our private format.
+                if self.payload.len() != 12 || self.payload[0] != 0x12 || self.payload[1] != 0xC8 {
+                    return Ok(CrsfTelemetry::Unknown {
+                        frame_type: self.frame_type,
+                    });
+                }
                 require_payload(self, 12)?;
                 let version = self.payload[2];
                 if version != 1 {

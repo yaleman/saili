@@ -6,7 +6,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifier
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Gauge, Paragraph};
+use ratatui::widgets::{Block, Clear, Gauge, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 use saili::{
     CHANNEL_COUNT, CrsfFrame, CrsfTelemetry, DeviceIdentity, DeviceState, MappingError, RC_MAX_US,
@@ -26,8 +26,20 @@ const MAX_TRANSMIT_RATE_HZ: u16 = 50;
 pub fn run() -> Result<(), AppError> {
     let arguments = Arguments::parse();
     let config = RuntimeConfig::try_from(arguments)?;
-    let device = SailiDevice::connect()?;
-    let mut app = App::new(device.identity().clone(), config.mapping);
+    let (device, device_notice) = match SailiDevice::connect() {
+        Ok(device) => (Some(device), None),
+        Err(error) => (
+            None,
+            Some(format!(
+                "SAILI input unavailable: {error}; configuration remains available"
+            )),
+        ),
+    };
+    let identity = device.as_ref().map(|current| current.identity().clone());
+    let mut app = App::new(identity, config.mapping);
+    if let Some(notice) = device_notice {
+        app.notice = notice;
+    }
     let backend = Backend::start(config.backend)?;
     let mut terminal = match ratatui::try_init() {
         Ok(terminal) => terminal,
@@ -37,7 +49,10 @@ pub fn run() -> Result<(), AppError> {
         }
     };
 
-    let run_result = run_loop(&mut terminal, &device, &backend, &mut app);
+    let run_result = terminal
+        .clear()
+        .map_err(AppError::Terminal)
+        .and_then(|()| run_loop(&mut terminal, device.as_ref(), &backend, &mut app));
     let shutdown_result = backend.shutdown();
     ratatui::restore();
 
@@ -48,12 +63,14 @@ pub fn run() -> Result<(), AppError> {
 
 fn run_loop(
     terminal: &mut DefaultTerminal,
-    device: &SailiDevice,
+    device: Option<&SailiDevice>,
     backend: &Backend,
     app: &mut App,
 ) -> Result<(), AppError> {
     loop {
-        if let ReadStatus::State(state) = device.read_state(DEVICE_POLL_INTERVAL)? {
+        if let Some(device) = device
+            && let ReadStatus::State(state) = device.read_state(DEVICE_POLL_INTERVAL)?
+        {
             app.update_input(state);
             backend.set_output(app.output_mode, app.mapped_input);
         }
@@ -92,6 +109,23 @@ fn handle_event(event: Event, app: &mut App) -> AppCommand {
         return AppCommand::Continue;
     };
 
+    if let Some(editor) = app.mapping_editor.as_mut() {
+        let action = handle_mapping_event(code, editor);
+        match action {
+            MappingEditorAction::Cancel => {
+                app.mapping_editor = None;
+                app.notice = "Mapping changes cancelled; output remains in safe hold".to_owned();
+            }
+            MappingEditorAction::Save => {
+                if let Some(editor) = app.mapping_editor.take() {
+                    app.apply_mapping(editor);
+                }
+            }
+            MappingEditorAction::Continue => {}
+        }
+        return AppCommand::Continue;
+    }
+
     if matches!(code, KeyCode::Esc | KeyCode::Char('q'))
         || (code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL))
     {
@@ -100,6 +134,9 @@ fn handle_event(event: Event, app: &mut App) -> AppCommand {
 
     if code == KeyCode::Char('l') {
         app.toggle_live();
+    }
+    if code == KeyCode::Char('m') {
+        app.open_mapping_editor();
     }
 
     AppCommand::Continue
@@ -111,7 +148,7 @@ enum AppCommand {
 }
 
 struct App {
-    identity: DeviceIdentity,
+    identity: Option<DeviceIdentity>,
     mapping: RcMapping,
     state: Option<DeviceState>,
     mapped_input: RcChannels,
@@ -125,10 +162,11 @@ struct App {
     safe_override: bool,
     telemetry: FlightControllerTelemetry,
     notice: String,
+    mapping_editor: Option<MappingEditor>,
 }
 
 impl App {
-    fn new(identity: DeviceIdentity, mapping: RcMapping) -> Self {
+    fn new(identity: Option<DeviceIdentity>, mapping: RcMapping) -> Self {
         Self {
             identity,
             mapping,
@@ -144,6 +182,7 @@ impl App {
             safe_override: true,
             telemetry: FlightControllerTelemetry::default(),
             notice: "Safe hold active; press l with throttle low and arm off".to_owned(),
+            mapping_editor: None,
         }
     }
 
@@ -152,6 +191,28 @@ impl App {
         self.state = Some(state);
         self.reports_received = self.reports_received.saturating_add(1);
         self.last_update = Some(Instant::now());
+    }
+
+    fn open_mapping_editor(&mut self) {
+        self.output_mode = OutputMode::SafeHold;
+        self.mapping_editor = Some(MappingEditor::from_mapping(self.mapping));
+        self.notice = "Mapping editor open; output held safe".to_owned();
+    }
+
+    fn apply_mapping(&mut self, editor: MappingEditor) {
+        match RcMapping::new_full(editor.channels, editor.inverted) {
+            Ok(mapping) => {
+                self.mapping = mapping;
+                if let Some(state) = self.state {
+                    self.mapped_input = self.mapping.map(state);
+                }
+                self.mapping_editor = None;
+                self.notice = "Mapping saved; output remains in safe hold".to_owned();
+            }
+            Err(error) => {
+                self.mapping_editor = Some(editor.with_error(error.to_string()));
+            }
+        }
     }
 
     fn update_backend(&mut self, event: BackendEvent) {
@@ -208,14 +269,67 @@ impl App {
             );
             return;
         }
-        if self.mapped_input.armed() {
-            self.notice = "Cannot go live while the arm switch is on".to_owned();
-            return;
-        }
-
         self.output_mode = OutputMode::Live;
-        self.notice = "Live controller forwarding enabled".to_owned();
+        self.notice = "Live forwarding enabled; controller considered armed".to_owned();
     }
+}
+
+struct MappingEditor {
+    selected: usize,
+    channels: [usize; CHANNEL_COUNT],
+    inverted: [bool; CHANNEL_COUNT],
+    error: Option<String>,
+}
+
+impl MappingEditor {
+    fn from_mapping(mapping: RcMapping) -> Self {
+        Self {
+            selected: 0,
+            channels: mapping.all_channels(),
+            inverted: mapping.inverted(),
+            error: None,
+        }
+    }
+
+    fn with_error(mut self, error: String) -> Self {
+        self.error = Some(error);
+        self
+    }
+}
+
+enum MappingEditorAction {
+    Continue,
+    Cancel,
+    Save,
+}
+
+fn handle_mapping_event(code: KeyCode, editor: &mut MappingEditor) -> MappingEditorAction {
+    match code {
+        KeyCode::Esc => return MappingEditorAction::Cancel,
+        KeyCode::Up => {
+            editor.selected = editor.selected.saturating_sub(1);
+        }
+        KeyCode::Down => {
+            editor.selected = (editor.selected + 1).min(CHANNEL_COUNT - 1);
+        }
+        KeyCode::Left => {
+            editor.channels[editor.selected] =
+                editor.channels[editor.selected].saturating_sub(1).max(1);
+            editor.error = None;
+        }
+        KeyCode::Right => {
+            editor.channels[editor.selected] =
+                (editor.channels[editor.selected] + 1).min(CHANNEL_COUNT);
+            editor.error = None;
+        }
+        KeyCode::Char('i') => {
+            editor.inverted[editor.selected] = !editor.inverted[editor.selected];
+            editor.error = None;
+        }
+        KeyCode::Enter => return MappingEditorAction::Save,
+        _ => {}
+    }
+    MappingEditorAction::Continue
 }
 
 enum BackendState {
@@ -422,6 +536,72 @@ fn render(frame: &mut Frame, app: &App) {
     render_telemetry(frame, telemetry_area, &app.telemetry);
     render_raw_packet(frame, raw_area, app.state);
     render_help(frame, help_area, app);
+    if let Some(editor) = &app.mapping_editor {
+        render_mapping_editor(frame, editor);
+    }
+}
+
+fn render_mapping_editor(frame: &mut Frame, editor: &MappingEditor) {
+    let area = centered_rect(60, 60, frame.area());
+    frame.render_widget(Clear, area);
+
+    let names = ["ROLL", "PITCH", "THROTTLE", "YAW", "AUX2", "AUX3", "AUX4"];
+    let mut lines = vec![Line::from("Select an input channel for each output")];
+    lines.push(Line::from(""));
+    for (index, name) in names.iter().enumerate() {
+        let marker = if index == editor.selected { ">" } else { " " };
+        let style = if index == editor.selected {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(Span::styled(
+            format!(
+                "{marker} {name:<8} CH{}  {}",
+                editor.channels[index],
+                if editor.inverted[index] {
+                    "inverted"
+                } else {
+                    "normal"
+                }
+            ),
+            style,
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(
+        "↑/↓ select   ←/→ input   i invert   Enter save   Esc cancel",
+    ));
+    if let Some(error) = &editor.error {
+        lines.push(Line::from(Span::styled(
+            error,
+            Style::default().fg(Color::Red),
+        )));
+    }
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::bordered().title(" Configure input mapping "))
+            .alignment(Alignment::Left),
+        area,
+    );
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::vertical([
+        Constraint::Percentage((100 - percent_y) / 2),
+        Constraint::Percentage(percent_y),
+        Constraint::Percentage((100 - percent_y) / 2),
+    ])
+    .split(area);
+    Layout::horizontal([
+        Constraint::Percentage((100 - percent_x) / 2),
+        Constraint::Percentage(percent_x),
+        Constraint::Percentage((100 - percent_x) / 2),
+    ])
+    .split(vertical[1])[1]
 }
 
 fn render_status(frame: &mut Frame, area: Rect, app: &App) {
@@ -429,16 +609,31 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
         .last_update
         .map(|updated| format!("{} ms ago", updated.elapsed().as_millis()))
         .unwrap_or_else(|| "waiting for first report".to_owned());
+    let (connection_label, connection_color, identity) = app
+        .identity
+        .as_ref()
+        .map(|identity| {
+            (
+                "CONNECTED",
+                Color::Green,
+                format!("{} {}", identity.manufacturer, identity.product),
+            )
+        })
+        .unwrap_or((
+            "INPUT UNAVAILABLE",
+            Color::Yellow,
+            "SAILI not found".to_owned(),
+        ));
     let text = Line::from(vec![
         Span::styled(
-            "CONNECTED",
+            connection_label,
             Style::default()
-                .fg(Color::Green)
+                .fg(connection_color)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(format!(
-            "  {} {}  •  reports {}  •  {}",
-            app.identity.manufacturer, app.identity.product, app.reports_received, age
+            "  {}  •  reports {}  •  {}",
+            identity, app.reports_received, age
         )),
     ]);
 
@@ -506,14 +701,14 @@ fn render_rc_input(frame: &mut Frame, area: Rect, app: &App) {
         );
     }
 
-    let (arm_label, arm_color) = if app.mapped_input.armed() {
+    let (arm_label, arm_color) = if app.output_mode == OutputMode::Live {
         ("ON", Color::Red)
     } else {
         ("OFF", Color::Green)
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::raw("ARM INPUT "),
+            Span::raw("ARM OUTPUT "),
             Span::styled(
                 arm_label,
                 Style::default().fg(arm_color).add_modifier(Modifier::BOLD),
@@ -737,7 +932,7 @@ fn render_raw_packet(frame: &mut Frame, area: Rect, state: Option<DeviceState>) 
 fn render_help(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(format!(
-            "{}  •  l live/safe  •  q / Esc / Ctrl-C quit",
+            "{}  •  m mapping  •  l live/safe  •  q / Esc / Ctrl-C quit",
             app.notice
         ))
         .alignment(Alignment::Center)
