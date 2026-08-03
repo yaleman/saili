@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-A Rust TUI application for reading SAILI Simulator - PhoenixRC Controllers. Works with the USB adapter (VID: 0x1781, PID: 0x0898) to read 7 analogue channels plus one digital/auxiliary byte from Turnigy TGY 9X transmitters. The two case selectors choose adapter mode/protocol; they are not HID inputs.
+A Rust TUI application for reading SAILI Simulator - PhoenixRC Controllers. Works with the USB adapter (VID: 0x1781, PID: 0x0898), whose original and clone revisions expose different HID layouts. The two case selectors choose adapter mode/protocol; they are not HID inputs.
 
 ## Key Entry Points
 
@@ -34,16 +34,16 @@ A Rust TUI application for reading SAILI Simulator - PhoenixRC Controllers. Work
 
 **Library API**:
 - `SailiDevice::connect()` -> `Result<SailiDevice, SailiError>` - discovers and opens the adapter
-- `SailiDevice::read_state(timeout)` -> `Result<ReadStatus, SailiError>` - reads packet or returns timeout
-- `ReadStatus::Timeout` or `ReadStatus::State(DeviceState)` - typed result wrapper
+- `SailiDevice::spawn_reader()` - returns a typed result and drains reports independently of TUI redraws
+- `RawReport`, `ReportFormat`, `Decoder`, and `DecodedState` - typed raw and semantic protocol layers
 
 **TUI Architecture**:
 - Main runs `app::run()` with continuous device polling
 - Polls device every 10ms, redraws UI every 40ms
 - Exits on 'q', Escape, or Ctrl-C
-- Shows seven channel gauges, mapping status, raw packet bytes, and live/safe output state
+- Shows eight channel gauges, decoder/mux status, reader statistics, raw packet bytes, mapping status, and live/safe output state
 - Starts without the HID adapter so ESPHome status and the mapping modal remain usable
-- Press `m` to map all seven analogue inputs to ROLL, PITCH, THROTTLE, YAW, AUX2, AUX3, and AUX4
+- Press `m` to map all eight analogue inputs to ROLL, PITCH, THROTTLE, YAW, AUX2, AUX3, AUX4, and AUX5
 
 ## Dependencies & Path
 
@@ -58,13 +58,13 @@ A Rust TUI application for reading SAILI Simulator - PhoenixRC Controllers. Work
 **Protocol tests** (`tests/protocol.rs`):
 - Tests packet decoding with `[10, 1, 20, 30, 40, 50, 60, 70]` data
 - Analogue channel byte indices are non-standard: [0, 2, 3, 4, 5, 6, 7]
-- Byte index 1 is retained as a raw digital/auxiliary value, but is not treated as a physical arm switch
+- Clone byte index 1 is never treated as an arm switch; it is an analogue input only in explicit Linux-demuxed mode. Legacy button behavior is display-only and available only in explicit legacy mode.
 - Short reports rejected with `PacketError::UnexpectedLength`
 
 **HID report contract**:
-- Reports are exactly 8 bytes: seven 0-255 analogue inputs at bytes 0, 2-7, plus byte 1
+- Reports are exactly 8 bytes. Clone formats expose eight analogue inputs; raw clones multiplex byte 7 across alternating reports and require guided phase calibration plus cadence-loss fail-closed handling, while Linux `hid-pxrc` reports use byte 1 and byte 7 as the final two axes.
 - The SAILI case selectors do not change HID reports; they only select adapter mode/protocol
-- The TUI mapping modal explicitly maps all seven analogue inputs to four primary outputs and AUX2-AUX4
+- The TUI mapping modal explicitly maps all eight analogue inputs to four primary outputs and AUX2-AUX5
 - CRSF AUX1/channel 5 is controlled by live/safe state: high while live, low in safe hold or failsafe
 
 **Hardware requirements**:

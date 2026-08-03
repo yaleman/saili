@@ -9,14 +9,15 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Gauge, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 use saili::{
-    CHANNEL_COUNT, CrsfFrame, CrsfTelemetry, DeviceIdentity, DeviceState, MappingError, RC_MAX_US,
-    RC_MIN_US, RcChannels, RcMapping, ReadStatus, SailiDevice, SailiError, ServerIdentity,
+    ArmConfig, ArmController, CHANNEL_COUNT, CrsfFrame, CrsfTelemetry, DecodedState,
+    DeviceIdentity, MappingError, MuxState, RC_MAX_US, RC_MIN_US, RcChannels, RcMapping,
+    ReaderConfig, ReaderHandle, ReaderSnapshot, ReaderStartError, ReportFormat, SailiDevice,
+    SailiError, ServerIdentity,
 };
 use thiserror::Error;
 
 use crate::backend::{Backend, BackendConfig, BackendError, BackendEvent, OutputMode};
 
-const DEVICE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(40);
 const LIVE_INPUT_MAX_AGE: Duration = Duration::from_millis(150);
 const SAFE_THROTTLE_MAX_US: u16 = 1050;
@@ -36,15 +37,45 @@ pub fn run() -> Result<(), AppError> {
         ),
     };
     let identity = device.as_ref().map(|current| current.identity().clone());
-    let mut app = App::new(identity, config.mapping);
+    let needs_mux_calibration =
+        identity
+            .as_ref()
+            .is_some_and(|identity| match config.reader.report_format {
+                ReportFormat::RawMuxed8 => true,
+                ReportFormat::Auto => identity.format_hint() == Some(ReportFormat::RawMuxed8),
+                ReportFormat::LinuxDemuxed8 | ReportFormat::Legacy7Button => false,
+            });
+    let mut app = App::new(identity, config.mapping, config.arm);
     if let Some(notice) = device_notice {
         app.notice = notice;
     }
-    let backend = Backend::start(config.backend)?;
+    let reader = device
+        .map(|device| device.spawn_reader(config.reader))
+        .transpose()?;
+    if needs_mux_calibration {
+        if let Some(reader) = reader.as_ref() {
+            let _ = reader.start_mux_calibration();
+        }
+        app.notice =
+            "Raw mux input requires calibration: move input 7, press Enter, then move input 8"
+                .to_owned();
+    }
+    let backend = match Backend::start(config.backend) {
+        Ok(backend) => backend,
+        Err(error) => {
+            if let Some(reader) = reader {
+                reader.shutdown();
+            }
+            return Err(error.into());
+        }
+    };
     let mut terminal = match ratatui::try_init() {
         Ok(terminal) => terminal,
         Err(error) => {
             let _ = backend.shutdown();
+            if let Some(reader) = reader {
+                reader.shutdown();
+            }
             return Err(AppError::Terminal(error));
         }
     };
@@ -52,7 +83,10 @@ pub fn run() -> Result<(), AppError> {
     let run_result = terminal
         .clear()
         .map_err(AppError::Terminal)
-        .and_then(|()| run_loop(&mut terminal, device.as_ref(), &backend, &mut app));
+        .and_then(|()| run_loop(&mut terminal, reader.as_ref(), &backend, &mut app));
+    if let Some(reader) = reader {
+        reader.shutdown();
+    }
     let shutdown_result = backend.shutdown();
     ratatui::restore();
 
@@ -63,16 +97,17 @@ pub fn run() -> Result<(), AppError> {
 
 fn run_loop(
     terminal: &mut DefaultTerminal,
-    device: Option<&SailiDevice>,
+    reader: Option<&ReaderHandle>,
     backend: &Backend,
     app: &mut App,
 ) -> Result<(), AppError> {
     loop {
-        if let Some(device) = device
-            && let ReadStatus::State(state) = device.read_state(DEVICE_POLL_INTERVAL)?
-        {
-            app.update_input(state);
-            backend.set_output(app.output_mode, app.mapped_input);
+        if let Some(reader) = reader {
+            let snapshot = reader.snapshot();
+            if snapshot.revision != app.reader_revision {
+                app.update_reader(snapshot);
+                backend.set_output(app.output_mode, app.mapped_input);
+            }
         }
 
         for backend_event in backend.drain_events() {
@@ -84,7 +119,7 @@ fn run_loop(
             .map_err(AppError::Terminal)?;
 
         if event::poll(INPUT_POLL_INTERVAL).map_err(AppError::Input)? {
-            match handle_event(event::read().map_err(AppError::Input)?, app) {
+            match handle_event(event::read().map_err(AppError::Input)?, app, reader) {
                 AppCommand::Continue => {
                     backend.set_output(app.output_mode, app.mapped_input);
                 }
@@ -98,7 +133,7 @@ fn run_loop(
     }
 }
 
-fn handle_event(event: Event, app: &mut App) -> AppCommand {
+fn handle_event(event: Event, app: &mut App, reader: Option<&ReaderHandle>) -> AppCommand {
     let Event::Key(KeyEvent {
         code,
         modifiers,
@@ -138,6 +173,12 @@ fn handle_event(event: Event, app: &mut App) -> AppCommand {
     if code == KeyCode::Char('m') {
         app.open_mapping_editor();
     }
+    if code == KeyCode::Char('p') {
+        app.start_mux_calibration(reader);
+    }
+    if code == KeyCode::Enter && app.mux_calibration_in_progress() {
+        app.confirm_mux_calibration(reader);
+    }
 
     AppCommand::Continue
 }
@@ -150,11 +191,13 @@ enum AppCommand {
 struct App {
     identity: Option<DeviceIdentity>,
     mapping: RcMapping,
-    state: Option<DeviceState>,
+    arm: ArmController,
+    state: Option<DecodedState>,
     mapped_input: RcChannels,
     output_mode: OutputMode,
-    reports_received: u64,
     last_update: Option<Instant>,
+    reader_revision: u64,
+    reader_snapshot: Option<ReaderSnapshot>,
     backend_state: BackendState,
     commands_sent: u64,
     commands_acknowledged: u64,
@@ -166,15 +209,17 @@ struct App {
 }
 
 impl App {
-    fn new(identity: Option<DeviceIdentity>, mapping: RcMapping) -> Self {
+    fn new(identity: Option<DeviceIdentity>, mapping: RcMapping, arm: ArmConfig) -> Self {
         Self {
             identity,
             mapping,
+            arm: ArmController::new(arm),
             state: None,
             mapped_input: RcChannels::safe(),
             output_mode: OutputMode::SafeHold,
-            reports_received: 0,
             last_update: None,
+            reader_revision: 0,
+            reader_snapshot: None,
             backend_state: BackendState::Starting,
             commands_sent: 0,
             commands_acknowledged: 0,
@@ -186,11 +231,56 @@ impl App {
         }
     }
 
-    fn update_input(&mut self, state: DeviceState) {
-        self.mapped_input = self.mapping.map(state);
-        self.state = Some(state);
-        self.reports_received = self.reports_received.saturating_add(1);
-        self.last_update = Some(Instant::now());
+    fn update_reader(&mut self, snapshot: ReaderSnapshot) {
+        self.reader_revision = snapshot.revision;
+        self.reader_snapshot = Some(snapshot.clone());
+        if let Some(state) = snapshot.state {
+            self.mapped_input = self.mapping.map(state).with_arm(self.arm.update(state));
+            self.state = Some(state);
+            self.last_update = Some(state.raw().received_at());
+        } else {
+            self.state = None;
+            self.mapped_input = RcChannels::safe();
+            self.arm.reset();
+            self.last_update = None;
+        }
+    }
+
+    fn mux_calibration_in_progress(&self) -> bool {
+        self.reader_snapshot.as_ref().is_some_and(|snapshot| {
+            matches!(
+                snapshot.stats.decoder_status.mux_state,
+                Some(MuxState::CalibratingFirst | MuxState::CalibratingSecond)
+            )
+        })
+    }
+
+    fn start_mux_calibration(&mut self, reader: Option<&ReaderHandle>) {
+        self.output_mode = OutputMode::SafeHold;
+        let Some(reader) = reader else {
+            self.notice = "Cannot calibrate: HID reader is unavailable".to_owned();
+            return;
+        };
+        match reader.start_mux_calibration() {
+            Ok(()) => {
+                self.notice =
+                    "Move muxed input 7 through its range, then press Enter to confirm".to_owned();
+            }
+            Err(error) => self.notice = format!("Cannot start mux calibration: {error}"),
+        }
+    }
+
+    fn confirm_mux_calibration(&mut self, reader: Option<&ReaderHandle>) {
+        let Some(reader) = reader else {
+            self.notice = "Cannot confirm calibration: HID reader is unavailable".to_owned();
+            return;
+        };
+        match reader.confirm_mux_calibration() {
+            Ok(()) => {
+                self.notice = "Calibration step submitted; follow the next input prompt".to_owned();
+            }
+            Err(error) => self.notice = format!("Calibration rejected: {error}"),
+        }
     }
 
     fn open_mapping_editor(&mut self) {
@@ -254,12 +344,15 @@ impl App {
             return;
         }
 
-        let Some(last_update) = self.last_update else {
-            self.notice = "Cannot go live before the first controller report".to_owned();
-            return;
-        };
-        if last_update.elapsed() > LIVE_INPUT_MAX_AGE {
-            self.notice = "Cannot go live while controller input is stale".to_owned();
+        if !self.reader_snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot.live_input_is_ready(Instant::now(), LIVE_INPUT_MAX_AGE)
+        }) {
+            let message = if self.last_update.is_some() {
+                "Cannot go live while controller input is stale"
+            } else {
+                "Cannot go live before the first complete controller report"
+            };
+            self.notice = message.to_owned();
             return;
         }
         if self.mapped_input.throttle() > SAFE_THROTTLE_MAX_US {
@@ -269,8 +362,16 @@ impl App {
             );
             return;
         }
+        if self.arm.is_armed() {
+            self.notice = "Cannot go live while the configured arm source is on".to_owned();
+            return;
+        }
         self.output_mode = OutputMode::Live;
-        self.notice = "Live forwarding enabled; controller considered armed".to_owned();
+        self.notice = if self.arm.has_source() {
+            "Live forwarding enabled; arm source controls CH5".to_owned()
+        } else {
+            "Live forwarding enabled; CH5 remains forced low".to_owned()
+        };
     }
 }
 
@@ -519,7 +620,7 @@ fn render(frame: &mut Frame, app: &App) {
         raw_area,
         help_area,
     ] = Layout::vertical([
-        Constraint::Length(3),
+        Constraint::Length(4),
         Constraint::Length((CHANNEL_COUNT + 2) as u16),
         Constraint::Length(7),
         Constraint::Length(4),
@@ -534,7 +635,13 @@ fn render(frame: &mut Frame, app: &App) {
     render_rc_input(frame, rc_area, app);
     render_backend(frame, backend_area, app);
     render_telemetry(frame, telemetry_area, &app.telemetry);
-    render_raw_packet(frame, raw_area, app.state);
+    render_raw_packet(
+        frame,
+        raw_area,
+        app.reader_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.latest_raw),
+    );
     render_help(frame, help_area, app);
     if let Some(editor) = &app.mapping_editor {
         render_mapping_editor(frame, editor);
@@ -545,7 +652,9 @@ fn render_mapping_editor(frame: &mut Frame, editor: &MappingEditor) {
     let area = centered_rect(60, 60, frame.area());
     frame.render_widget(Clear, area);
 
-    let names = ["ROLL", "PITCH", "THROTTLE", "YAW", "AUX2", "AUX3", "AUX4"];
+    let names = [
+        "ROLL", "PITCH", "THROTTLE", "YAW", "AUX2", "AUX3", "AUX4", "AUX5",
+    ];
     let mut lines = vec![Line::from("Select an input channel for each output")];
     lines.push(Line::from(""));
     for (index, name) in names.iter().enumerate() {
@@ -624,7 +733,89 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
             Color::Yellow,
             "SAILI not found".to_owned(),
         ));
-    let text = Line::from(vec![
+    let (
+        format,
+        confidence,
+        reason,
+        reports,
+        decoded,
+        malformed,
+        coalesced,
+        reconnects,
+        mux_losses,
+    ) = app
+        .reader_snapshot
+        .as_ref()
+        .map(|snapshot| {
+            (
+                snapshot
+                    .stats
+                    .selected_format
+                    .map_or_else(|| "uncertain".to_owned(), |format| format.to_string()),
+                snapshot.stats.format_confidence.label().to_owned(),
+                snapshot.stats.selection_reason.clone(),
+                snapshot.stats.reports_received,
+                snapshot.stats.decoded_states,
+                snapshot.stats.malformed_reports,
+                snapshot.stats.coalesced_updates,
+                snapshot.stats.reconnects,
+                snapshot.stats.mux_loss_events,
+            )
+        })
+        .unwrap_or_else(|| {
+            (
+                "--".to_owned(),
+                "--".to_owned(),
+                "--".to_owned(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )
+        });
+    let raw_age = app
+        .reader_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.stats.last_raw_at)
+        .map(|updated| format!("{} ms", updated.elapsed().as_millis()))
+        .unwrap_or_else(|| "--".to_owned());
+    let complete_age = app
+        .reader_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.stats.last_complete_at)
+        .map(|updated| format!("{} ms", updated.elapsed().as_millis()))
+        .unwrap_or_else(|| "--".to_owned());
+    let mux = app
+        .reader_snapshot
+        .as_ref()
+        .map(|snapshot| {
+            let status = snapshot.stats.decoder_status;
+            let mux_problem = status
+                .calibration_error
+                .map_or_else(String::new, |error| format!("  •  {error}"));
+            let loss_problem = status
+                .loss_reason
+                .map_or_else(String::new, |reason| format!("  •  {reason}"));
+            format!(
+                "mux {}  •  samples {}/{}  •  phase {}  •  phases {}/{}{}{}",
+                status
+                    .mux_state
+                    .map_or_else(|| "n/a".to_owned(), |state| state.label().to_owned()),
+                status.calibration_samples,
+                status.calibration_target,
+                status
+                    .current_phase
+                    .map_or_else(|| "--".to_owned(), |phase| phase.to_string()),
+                u8::from(status.mux_seen[0]),
+                u8::from(status.mux_seen[1]),
+                mux_problem,
+                loss_problem
+            )
+        })
+        .unwrap_or_else(|| "mux --  •  samples --/--  •  phase --  •  phases --/--".to_owned());
+    let first_line = Line::from(vec![
         Span::styled(
             connection_label,
             Style::default()
@@ -632,33 +823,51 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(format!(
-            "  {}  •  reports {}  •  {}",
-            identity, app.reports_received, age
+            "  {}  •  format {} ({})  •  raw {} / complete {}  •  bad {}  •  mux-loss {}  •  coalesced {}  •  reconnects {}  •  {}",
+            identity,
+            format,
+            confidence,
+            reports,
+            decoded,
+            malformed,
+            mux_losses,
+            coalesced,
+            reconnects,
+            age
         )),
     ]);
+    let second_line = Line::from(format!(
+        "raw age {raw_age}  •  complete age {complete_age}  •  {mux}  •  {reason}"
+    ));
 
     frame.render_widget(
-        Paragraph::new(text).block(Block::bordered().title(" SAILI Controller ")),
+        Paragraph::new(vec![first_line, second_line])
+            .block(Block::bordered().title(" SAILI Controller ")),
         area,
     );
 }
 
-fn render_channels(frame: &mut Frame, area: Rect, state: Option<DeviceState>) {
+fn render_channels(frame: &mut Frame, area: Rect, state: Option<DecodedState>) {
     let block = Block::bordered().title(" Analogue inputs ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let rows = Layout::vertical([Constraint::Length(1); CHANNEL_COUNT]).split(inner);
-    let channels = state
-        .map(|current| *current.channels())
-        .unwrap_or([0; CHANNEL_COUNT]);
-
-    for (index, (row, value)) in rows.iter().zip(channels).enumerate() {
-        let percentage = u16::from(value) * 100 / 255;
-        let label = format!("CH{}  {value:3}  {percentage:3}%", index + 1);
+    for (index, row) in rows.iter().enumerate() {
+        let value = state.and_then(|current| current.channel(index));
+        let (ratio, label) = value.map_or(
+            (0.0, format!("CH{}  --  unavailable", index + 1)),
+            |value| {
+                let percentage = u16::from(value) * 100 / 255;
+                (
+                    f64::from(value) / 255.0,
+                    format!("CH{}  {value:3}  {percentage:3}%", index + 1),
+                )
+            },
+        );
         let gauge = Gauge::default()
             .gauge_style(Style::default().fg(Color::Cyan))
-            .ratio(f64::from(value) / 255.0)
+            .ratio(ratio)
             .label(label)
             .use_unicode(true);
         frame.render_widget(gauge, *row);
@@ -701,7 +910,8 @@ fn render_rc_input(frame: &mut Frame, area: Rect, app: &App) {
         );
     }
 
-    let (arm_label, arm_color) = if app.output_mode == OutputMode::Live {
+    let (arm_label, arm_color) = if app.output_mode == OutputMode::Live && app.mapped_input.armed()
+    {
         ("ON", Color::Red)
     } else {
         ("OFF", Color::Green)
@@ -713,7 +923,11 @@ fn render_rc_input(frame: &mut Frame, area: Rect, app: &App) {
                 arm_label,
                 Style::default().fg(arm_color).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  •  CH5 / aux1"),
+            Span::raw(if app.arm.has_source() {
+                "  •  CH5 / configured arm source"
+            } else {
+                "  •  CH5 forced low / arm unmapped"
+            }),
         ]))
         .alignment(Alignment::Center),
         rows[4],
@@ -909,11 +1123,11 @@ fn truncate_ascii(mut value: String, maximum: usize) -> String {
     value
 }
 
-fn render_raw_packet(frame: &mut Frame, area: Rect, state: Option<DeviceState>) {
-    let raw = state
+fn render_raw_packet(frame: &mut Frame, area: Rect, raw_report: Option<saili::RawReport>) {
+    let raw = raw_report
         .map(|current| {
             current
-                .raw()
+                .bytes()
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
                 .collect::<Vec<_>>()
@@ -932,7 +1146,7 @@ fn render_raw_packet(frame: &mut Frame, area: Rect, state: Option<DeviceState>) 
 fn render_help(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(format!(
-            "{}  •  m mapping  •  l live/safe  •  q / Esc / Ctrl-C quit",
+            "{}  •  p calibrate mux  •  Enter confirm step  •  m mapping  •  l live/safe  •  q / Esc / Ctrl-C quit",
             app.notice
         ))
         .alignment(Alignment::Center)
@@ -980,11 +1194,28 @@ struct Arguments {
 
     #[arg(long)]
     invert_yaw: bool,
+
+    #[arg(long, default_value = "auto")]
+    report_format: ReportFormat,
+
+    #[arg(long)]
+    swap_mux_channels: bool,
+
+    #[arg(long)]
+    arm_threshold: Option<u8>,
+
+    #[arg(long)]
+    arm_channel: Option<usize>,
+
+    #[arg(long)]
+    invert_arm: bool,
 }
 
 struct RuntimeConfig {
     backend: BackendConfig,
     mapping: RcMapping,
+    reader: ReaderConfig,
+    arm: ArmConfig,
 }
 
 impl TryFrom<Arguments> for RuntimeConfig {
@@ -1013,6 +1244,18 @@ impl TryFrom<Arguments> for RuntimeConfig {
             ],
         )?;
 
+        let arm_channel = match arguments.arm_channel {
+            Some(channel) if (1..=CHANNEL_COUNT).contains(&channel) => Some(channel - 1),
+            Some(channel) => return Err(ConfigError::ArmChannel { channel }),
+            None => None,
+        };
+        let arm = ArmConfig {
+            channel: arm_channel,
+            threshold: arguments.arm_threshold.unwrap_or(127),
+            hysteresis: 4,
+            inverted: arguments.invert_arm,
+        };
+
         Ok(Self {
             backend: BackendConfig {
                 address: arguments.esphome_address,
@@ -1022,6 +1265,11 @@ impl TryFrom<Arguments> for RuntimeConfig {
                 ),
             },
             mapping,
+            reader: ReaderConfig {
+                report_format: arguments.report_format,
+                swap_mux_channels: arguments.swap_mux_channels,
+            },
+            arm,
         })
     }
 }
@@ -1033,6 +1281,9 @@ pub enum ConfigError {
 
     #[error(transparent)]
     Mapping(#[from] MappingError),
+
+    #[error("arm channel {channel} is invalid; use 1-{CHANNEL_COUNT}")]
+    ArmChannel { channel: usize },
 }
 
 #[derive(Debug, Error)]
@@ -1042,6 +1293,9 @@ pub enum AppError {
 
     #[error(transparent)]
     Device(#[from] SailiError),
+
+    #[error(transparent)]
+    Reader(#[from] ReaderStartError),
 
     #[error(transparent)]
     Backend(#[from] BackendError),

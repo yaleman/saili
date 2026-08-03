@@ -3,9 +3,11 @@
 Read the raw control packets produced by a FeiYing/SAILI PhoenixRC USB
 simulator adapter (`1781:0898`) on macOS.
 
-The adapter emits eight-byte packets containing seven analogue values and one
-digital/auxiliary byte. The Rust application provides a live terminal UI, while
-`read_saili.py` remains available as a lightweight diagnostic reader.
+The adapter emits eight-byte HID reports, but `1781:0898` is shared by several
+hardware revisions. Original PhoenixRC adapters use seven analogue values plus
+a button; FeiYing/GoldWarrior/KHOBBY clones expose eight analogue values, with
+the final two values multiplexed on raw reports. The Rust application supports
+both layouts and fails closed when the layout cannot be identified safely.
 
 ![first image](image1.jpg)
 ![second image](image2.jpg)
@@ -92,44 +94,76 @@ address when mDNS is unavailable:
 cargo run --release -- --esphome-address 192.0.2.10:6053
 ```
 
-The interface shows all seven raw inputs, the mapped roll, pitch, throttle,
-yaw, and arm output states, ESPHome connection state, command counts, round-trip
-time, whether the bridge is receiving live or safe values, and decoded
+The interface shows eight raw inputs, the selected report format and confidence,
+mux calibration state, reader statistics, mapped roll/pitch/throttle/yaw, arm output
+state, ESPHome connection state, command counts, round-trip time, whether the bridge is receiving live or safe values, and decoded
 telemetry returned by the flight controller. The telemetry panel retains the
 latest battery, attitude, GPS, flight-mode, vario, barometer, and magnetometer
 values along with the most recent raw CRSF frame.
 
-Output starts in **SAFE HOLD**. With the controller reporting fresh input and
-throttle low, press `l` to enable live forwarding. A live connected controller
-is treated as the arm request; SAFE HOLD and link loss force channel 5 low.
-Press `l` again to return to safe hold. Press `q`, Escape, or Control-C to send
-safe values and exit.
+Output starts in **SAFE HOLD**. With the controller reporting a fresh complete
+state and throttle low, press `l` to enable live forwarding. CRSF channel 5 is
+forced low unless `--arm-channel` explicitly selects an analogue input. A
+configured arm input uses threshold hysteresis and must be off before entering
+live mode. Press `l` again to return to safe hold. Press `q`, Escape, or
+Control-C to send safe values and exit.
 
-The default mapping sends raw channels 1-4 to AETR and raw channels 5-7 to
-AUX2-AUX4. CRSF channel 5 (`aux1`, normally arm) follows the live/safe output
-state; the adapter's mode selectors are not controller inputs. Press `m` in
-the TUI to map all seven raw analogue inputs explicitly to ROLL, PITCH,
-THROTTLE, YAW, AUX2, AUX3, and AUX4. Use the arrow keys to select an output
-and input, `i` to invert it, `Enter` to save, or `Esc` to cancel. Every input
-must be assigned once.
+The default mapping sends inputs 1-4 to AETR and inputs 5-8 to AUX2-AUX5.
+Press `m` in the TUI to map all eight decoded inputs explicitly. Use the arrow
+keys to select an output and input, `i` to invert it, `Enter` to save, or `Esc`
+to cancel. Every input must be assigned once.
 
-The raw HID report layout is:
+Raw-muxed adapters require a guided phase calibration before live output. Move
+input 7 through its range and press `Enter`, then do the same for input 8.
+Press `p` to restart calibration. A suspected report-cadence gap, malformed
+report, read error, or reconnect invalidates the phase and forces safe output;
+calibration must then be repeated.
+
+### Report formats
+
+Select the decoder explicitly when the adapter identity is not enough:
+
+```bash
+cargo run --release -- --report-format raw-muxed8
+cargo run --release -- --report-format linux-demuxed8
+cargo run --release -- --report-format legacy7-button
+```
+
+`auto` is the default. It uses the available HID metadata, including the
+Linux `pxrc` driver when present. If no safe format hint is available, the TUI
+shows an uncertain format and does not publish live-capable input. The formats
+are:
+
+- `raw-muxed8`: bytes 0, 2-6 are persistent axes and byte 7 alternates between
+  the two final axes. The TUI requires guided calibration to identify the two
+  alternating phases, then monitors report cadence and returns to safe output
+  if phase continuity becomes uncertain. Use `--swap-mux-channels` if the
+  physical order is reversed.
+- `linux-demuxed8`: for reports already repaired by Linux `hid-pxrc`, the eight
+  axes are `[0, 2, 3, 4, 5, 6, 1, 7]`.
+- `legacy7-button`: the original seven-axis/button interpretation. Byte 1 is
+  available as display-only button metadata in this explicit format and is
+  never an implicit arm source.
+
+Raw byte 1 is never treated as an arm input in either clone format.
+
+The raw report layout is:
 
 | Byte | Meaning |
 | ---: | --- |
 | 0 | Analogue input 1, value 0-255 |
-| 1 | Digital/auxiliary byte; fixed on the observed adapter and not one of the mode selectors |
+| 1 | Format-dependent: unknown clone metadata, demultiplexed axis, or legacy button |
 | 2 | Analogue input 2, value 0-255 |
 | 3 | Analogue input 3, value 0-255 |
 | 4 | Analogue input 4, value 0-255 |
 | 5 | Analogue input 5, value 0-255 |
 | 6 | Analogue input 6, value 0-255 |
-| 7 | Analogue input 7, value 0-255 |
+| 7 | Analogue input 7, input 8, or one multiplexed phase, value 0-255 |
 
-The two SAILI case switches select adapter mode/protocol and do not change
-the HID report. They cannot be mapped as controller switches. A missing HID
-interface no longer prevents the TUI from starting; input panels remain
-empty while ESPHome status and configuration remain available.
+The two SAILI case switches select adapter mode/protocol and do not change the
+HID report. They cannot be mapped as controller switches. A missing HID
+interface or uncertain format no longer prevents the TUI from starting;
+ESPHome status and configuration remain available while output stays safe.
 
 The default mapping can still be overridden at startup. Learn the actual raw
 ordering by moving one control at a time, then override the mapping or
@@ -144,16 +178,52 @@ cargo run --release -- \
   --invert-pitch
 ```
 
-Run `cargo run --release -- --help` for all mapping, inversion, address, and
+For an explicit arm source, configure the input and threshold separately from
+the AETR mapping:
+
+```bash
+cargo run --release -- \
+  --report-format linux-demuxed8 \
+  --arm-channel 6 \
+  --arm-threshold 170 \
+  --invert-arm
+```
+
+Run `cargo run --release -- --help` for all format, mapping, arm, address, and
 transmit-rate options.
+
+### Capture raw reports
+
+`saili-capture` drains HID reports continuously without Ratatui or ESPHome
+work. It records monotonic timing, report length, raw bytes, changed-byte
+mask, HID metadata, descriptor hash, and available kernel-driver information:
+
+```bash
+cargo run --release --bin saili-capture -- \
+  --duration 30 \
+  --csv /tmp/saili-capture.csv \
+  --include-unchanged
+```
+
+Capture with controls stationary, each stick axis moved independently, each
+switch changed, and after reopening/reconnecting the adapter. Use these
+captures to identify mux phase behavior before selecting a format. HID reports
+arriving successfully do not prove that the transmitter is producing valid
+changing PPM data.
 
 ### Library API
 
 `src/lib.rs` provides the reusable interface:
 
 - `SailiDevice::connect()` discovers and opens `1781:0898` through HIDAPI.
-- `SailiDevice::read_state()` returns the typed `ReadStatus` result.
-- `DeviceState` exposes the seven channels, raw digital/auxiliary byte, and raw report.
+- `SailiDevice::spawn_reader()` returns a typed result, drains HID reports
+  independently of TUI redraws, and exposes reader statistics plus the latest
+  complete `DecodedState`.
+- `ReaderHandle::start_mux_calibration()` and
+  `ReaderHandle::confirm_mux_calibration()` control the raw-mux calibration
+  workflow without coupling HID reads to TUI redraws.
+- `RawReport`, `ReportFormat`, `Decoder`, and `DecodedState` separate raw HID
+  bytes from stateful semantic decoding.
 - `SailiError` and `PacketError` distinguish discovery, open, read, and
   malformed-report failures.
 - `RcMapping` converts adapter reports to 16 bounded RC channel values.

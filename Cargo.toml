@@ -2,6 +2,7 @@
 name = "saili"
 version = "0.1.0"
 edition = "2024"
+default-run = "saili"
 
 [dependencies]
 base64 = "0.23.0"
