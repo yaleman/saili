@@ -6,10 +6,10 @@
 
 namespace tank {
 
-constexpr std::size_t kRangeSensorCount = 4;
-constexpr std::size_t kRangeFrameSize = 16;
+constexpr std::size_t kRangeDirectionCount = 6;
+constexpr std::size_t kRangeFrameSize = 20;
 constexpr std::uint8_t kRangeFrameType = 0x7C;
-constexpr std::uint8_t kRangeFrameVersion = 1;
+constexpr std::uint8_t kRangeFrameVersion = 2;
 
 enum class DriveState : std::uint8_t {
     Disarmed,
@@ -94,10 +94,9 @@ class MedianFilter3 {
 std::uint8_t crc8_dvb_s2(const std::uint8_t *data, std::size_t length);
 
 std::array<std::uint8_t, kRangeFrameSize> encode_range_frame(
-    const std::array<std::uint16_t, kRangeSensorCount> &millimetres,
+    const std::array<std::uint16_t, kRangeDirectionCount> &millimetres,
     std::uint8_t valid_mask);
 
 const char *drive_state_name(DriveState state);
 
 }  // namespace tank
-

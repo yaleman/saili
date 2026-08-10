@@ -3,7 +3,8 @@ const NUMBER = "([+-]?\\d+(?:\\.\\d+)?)";
 const TANK_PATTERN = new RegExp(
   `^TANK state:(.+?) rx:(\\d+) arm:(\\d+) drive:${NUMBER} turn:${NUMBER} ` +
     `left:${NUMBER} right:${NUMBER} range\\[` +
-    `F:(!?)${NUMBER} B:(!?)${NUMBER} L:(!?)${NUMBER} R:(!?)${NUMBER}\\] ` +
+    `F:(!?)${NUMBER} B:(!?)${NUMBER} L:(!?)${NUMBER} R:(!?)${NUMBER} ` +
+    `U:(!?)${NUMBER} D:(!?)${NUMBER}\\] ` +
     `gps:(-?\\d+) sat:(\\d+) lat:${NUMBER} lon:${NUMBER}$`,
 );
 
@@ -58,15 +59,17 @@ export function parseTankLine(line) {
     right: Number.parseFloat(match[7]),
     ranges: {
       front: rangeReading(match[8], match[9]),
-      back: rangeReading(match[10], match[11]),
+      rear: rangeReading(match[10], match[11]),
       left: rangeReading(match[12], match[13]),
       right: rangeReading(match[14], match[15]),
+      up: rangeReading(match[16], match[17]),
+      down: rangeReading(match[18], match[19]),
     },
     gps: {
-      fix: Number.parseInt(match[16], 10),
-      satellites: Number.parseInt(match[17], 10),
-      latitude: Number.parseFloat(match[18]),
-      longitude: Number.parseFloat(match[19]),
+      fix: Number.parseInt(match[20], 10),
+      satellites: Number.parseInt(match[21], 10),
+      latitude: Number.parseFloat(match[22]),
+      longitude: Number.parseFloat(match[23]),
     },
   };
 }

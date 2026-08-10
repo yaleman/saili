@@ -509,9 +509,16 @@ input:disabled {
   grid-row: 2;
 }
 
-.range-reading.back {
+.range-reading.rear {
   grid-column: 2;
   grid-row: 3;
+}
+
+.vertical-ranges {
+  display: flex;
+  justify-content: center;
+  gap: 36px;
+  margin-top: 16px;
 }
 
 .vehicle-shape {

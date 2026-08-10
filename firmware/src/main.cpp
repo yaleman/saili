@@ -43,12 +43,29 @@ tank::DriveConfig drive_config = {
 };
 tank::DriveController drive_controller(drive_config);
 tank::ReversibleEsc esc;
-tank::UltrasonicArray ultrasonic({
-    tank::UltrasonicPins{.trigger = 10, .echo = 11},
-    tank::UltrasonicPins{.trigger = 12, .echo = 13},
-    tank::UltrasonicPins{.trigger = 14, .echo = 15},
-    tank::UltrasonicPins{.trigger = 16, .echo = 17},
-});
+constexpr std::array range_sensor_config = {
+    tank::RangeSensorConfig{
+        .direction = tank::RangeDirection::Front,
+        .type = tank::RangeSensorType::Tk50,
+        .interface = tank::SensorInterface::tca9548a(2, 3, 0),
+    },
+    tank::RangeSensorConfig{
+        .direction = tank::RangeDirection::Rear,
+        .type = tank::RangeSensorType::Tk50,
+        .interface = tank::SensorInterface::tca9548a(2, 3, 1),
+    },
+    tank::RangeSensorConfig{
+        .direction = tank::RangeDirection::Left,
+        .type = tank::RangeSensorType::Tk50,
+        .interface = tank::SensorInterface::tca9548a(2, 3, 2),
+    },
+    tank::RangeSensorConfig{
+        .direction = tank::RangeDirection::Right,
+        .type = tank::RangeSensorType::Tk50,
+        .interface = tank::SensorInterface::tca9548a(2, 3, 3),
+    },
+};
+tank::UltrasonicArray ultrasonic(range_sensor_config);
 tank::RangeTelemetry range_telemetry;
 MF_Serial *crsf_serial = nullptr;
 std::uint32_t last_range_telemetry_ms = 0;
@@ -57,11 +74,23 @@ std::uint32_t last_diagnostic_ms = 0;
 void print_diagnostics(
     const tank::DriveInput &input,
     const tank::DriveOutput &output) {
-    const auto &ranges = ultrasonic.readings();
+    const tank::RangeReading &front =
+        ultrasonic.reading(tank::RangeDirection::Front);
+    const tank::RangeReading &rear =
+        ultrasonic.reading(tank::RangeDirection::Rear);
+    const tank::RangeReading &left =
+        ultrasonic.reading(tank::RangeDirection::Left);
+    const tank::RangeReading &right =
+        ultrasonic.reading(tank::RangeDirection::Right);
+    const tank::RangeReading &up =
+        ultrasonic.reading(tank::RangeDirection::Up);
+    const tank::RangeReading &down =
+        ultrasonic.reading(tank::RangeDirection::Down);
     Serial.printf(
         "TANK state:%s rx:%d arm:%d drive:%+.2f turn:%+.2f "
         "left:%+.2f right:%+.2f range[F:%s%.2f B:%s%.2f "
-        "L:%s%.2f R:%s%.2f] gps:%d sat:%u lat:%.7f lon:%.7f\n",
+        "L:%s%.2f R:%s%.2f U:%s%.2f D:%s%.2f] gps:%d sat:%u "
+        "lat:%.7f lon:%.7f\n",
         tank::drive_state_name(output.state),
         input.receiver_connected,
         input.arm_signal,
@@ -69,14 +98,18 @@ void print_diagnostics(
         input.turn,
         output.tracks.left,
         output.tracks.right,
-        ranges[0].valid ? "" : "!",
-        ranges[0].metres,
-        ranges[1].valid ? "" : "!",
-        ranges[1].metres,
-        ranges[2].valid ? "" : "!",
-        ranges[2].metres,
-        ranges[3].valid ? "" : "!",
-        ranges[3].metres,
+        front.status == tank::RangeReadingStatus::Valid ? "" : "!",
+        front.metres,
+        rear.status == tank::RangeReadingStatus::Valid ? "" : "!",
+        rear.metres,
+        left.status == tank::RangeReadingStatus::Valid ? "" : "!",
+        left.metres,
+        right.status == tank::RangeReadingStatus::Valid ? "" : "!",
+        right.metres,
+        up.status == tank::RangeReadingStatus::Valid ? "" : "!",
+        up.metres,
+        down.status == tank::RangeReadingStatus::Valid ? "" : "!",
+        down.metres,
         static_cast<int>(gps.fix),
         gps.sat,
         static_cast<double>(gps.lat) / 10'000'000.0,
@@ -97,8 +130,13 @@ void setup() {
     }
     esc.neutral();
 
-    if (!ultrasonic.begin()) {
-        madflight_panic("Ultrasonic sensor initialization failed.");
+    const tank::RangeSensorInitResult range_init = ultrasonic.begin();
+    if (!range_init.ok()) {
+        Serial.printf(
+            "Range sensor %u initialization failed: %s\n",
+            static_cast<unsigned>(range_init.sensor_index),
+            tank::range_sensor_init_error_name(range_init.error));
+        madflight_panic("Range sensor initialization failed.");
     }
 
     crsf_serial = hal_get_ser_bus(0, 420000);

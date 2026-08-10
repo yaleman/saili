@@ -271,8 +271,8 @@ Press Control-C to stop.
 
 `firmware/` is a PlatformIO application for the MadFlight FC3v2 Rev-B. It
 turns CRSF pitch and roll into independent left/right track commands for a
-dual reversible brushed ESC. It also reads a u-blox NEO-6 GPS and four
-directional HC-SR04 sensors.
+dual reversible brushed ESC. It also reads a u-blox NEO-6 GPS and configurable
+TK50 ultrasonic sensors.
 
 This is manual drive firmware, not an autonomous rover stack. GPS and distance
 measurements are telemetry only; they do not stop or steer the vehicle.
@@ -292,16 +292,51 @@ range to 1200-1800 us.
 | Dual ESC | Right-channel signal | GPIO7 |
 | NEO-6 GPS | TX | GPIO5 / `SER1_RX` |
 | NEO-6 GPS | RX | GPIO4 / `SER1_TX` |
-| Front HC-SR04 | Trigger / Echo | GPIO10 / GPIO11 |
-| Back HC-SR04 | Trigger / Echo | GPIO12 / GPIO13 |
-| Left HC-SR04 | Trigger / Echo | GPIO14 / GPIO15 |
-| Right HC-SR04 | Trigger / Echo | GPIO16 / GPIO17 |
+| TCA9548A | SDA / SCL | GPIO2 / GPIO3 |
+| Front TK50 | SDA / SCL | TCA9548A channel 0 SD0 / SC0 |
+| Rear TK50 | SDA / SCL | TCA9548A channel 1 SD1 / SC1 |
+| Left TK50 | SDA / SCL | TCA9548A channel 2 SD2 / SC2 |
+| Right TK50 | SDA / SCL | TCA9548A channel 3 SD3 / SC3 |
 
-All devices must share ground. Power the four HC-SR04 modules from a regulated
-5 V supply, but reduce every Echo output from 5 V to 3.3 V before it reaches
-the RP2350. A 1 kohm resistor from Echo to the GPIO and a 2 kohm resistor from
-the GPIO to ground forms a suitable divider. The 3.3 V Trigger outputs can
-connect directly. Never connect an HC-SR04 Echo pin directly to the FC3.
+All devices must share ground. Power the TCA9548A and every TK50 from 3.3 V so
+the bus pull-ups cannot expose the RP2350 to 5 V. Configure each TK50 for I2C
+mode by shorting Jumper 1 and leaving Jumper 2 open; its Echo pin becomes SDA
+and its Trigger pin becomes SCL. Each I2C bus must have pull-ups to 3.3 V.
+Check the multiplexer breakout before adding
+resistors because many breakouts already include them.
+
+The active sensor list is `range_sensor_config` in `firmware/src/main.cpp`.
+Each entry declares a direction, sensor type, and interface:
+
+```cpp
+constexpr std::array range_sensor_config = {
+    tank::RangeSensorConfig{
+        .direction = tank::RangeDirection::Front,
+        .type = tank::RangeSensorType::Tk50,
+        .interface = tank::SensorInterface::direct(10, 11),
+    },
+    tank::RangeSensorConfig{
+        .direction = tank::RangeDirection::Rear,
+        .type = tank::RangeSensorType::Tk50,
+        .interface = tank::SensorInterface::tca9548a(2, 3, 0),
+    },
+};
+```
+
+Directions are `Front`, `Rear`, `Left`, `Right`, `Up`, and `Down`. The only
+sensor type currently supported is `Tk50`. `direct(sda, scl)` connects one
+TK50 directly to an otherwise dedicated pin pair.
+`tca9548a(sda, scl, multiplexer_index)` selects channel 0-7 of a
+default-address TCA9548A on that pin pair. Pin pairs use nominal 100 kHz
+software I2C, so they are not limited to the RP2350 hardware I2C pin
+assignments.
+
+Never put two direct TK50 sensors on the same pin pair: every TK50 uses address
+`0x57`. A direct TK50 also cannot sit upstream of a TCA9548A on the same pair,
+because it would answer together with the selected downstream TK50. The
+firmware rejects both configurations at startup. Multiple sensors may share a
+direction; telemetry reports the nearest fresh valid reading for that
+direction.
 
 NEO-6 carrier boards differ: power the module at the voltage printed in its
 own documentation. A bare NEO-6 module is a 3.3 V device; do not assume that a
@@ -363,16 +398,17 @@ plain build is `firmware/.pio/build/madflight-fc3v2/firmware.uf2`.
 
 MadFlight auto-detects the NEO-6 startup baud rate and configures u-blox binary
 messages. Take it outside with a clear view of the sky for the first fix. GPS,
-battery, attitude, altitude, and mode use normal CRSF telemetry. The four
-ranges use project-private CRSF frame type `0x7C`; the ESPHome bridge preserves
-the frame and this TUI decodes it as front, back, left, and right distances.
-The ultrasonic sensors are triggered sequentially to reduce cross-talk.
+battery, attitude, altitude, and mode use normal CRSF telemetry. The six
+ranges use version 2 of project-private CRSF frame type `0x7C`; the ESPHome
+bridge preserves the frame and this TUI decodes front, rear, left, right, up,
+and down distances. The TK50 sensors are triggered sequentially to reduce
+cross-talk.
 
 ### Browser serial console
 
 The dependency-free dashboard in `web/` connects directly to the FC3 USB
 serial port through the browser. It provides the raw interactive CLI, parsed
-drive state, CRSF status, four directional ranges, GPS, board sensors, safe
+drive state, CRSF status, six directional ranges, GPS, board sensors, safe
 diagnostic buttons, command history, and downloadable logs. The serial console
 has an enabled-by-default **Auto-scroll** option and a disabled-by-default
 **Show TANK state rows** option; leaving the latter disabled hides the frequent
@@ -546,7 +582,7 @@ The Rust application subscribes to that stream and decodes:
 | Flight mode | Current mode name |
 | Vario and barometer | Vertical speed, altitude, pressure, temperature |
 | Magnetometer | X, Y, Z field values |
-| Directional range | Front, back, left, and right distance |
+| Directional range | Front, rear, left, right, up, and down distance |
 
 Heartbeat, device-info, and MSP-response frames are identified. Unknown valid
 frame types are retained and shown as raw hexadecimal data instead of being

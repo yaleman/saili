@@ -11,7 +11,8 @@ import {
 test("parses the tank diagnostic line including invalid echoes", () => {
   const parsed = parseTankLine(
     "TANK state:NEUTRAL REQUIRED rx:1 arm:1 drive:+0.25 turn:-0.50 " +
-      "left:+0.10 right:-0.20 range[F:1.23 B:!0.00 L:0.45 R:2.50] " +
+      "left:+0.10 right:-0.20 range[F:1.23 B:!0.00 L:0.45 R:2.50 " +
+      "U:3.10 D:!0.00] " +
       "gps:3 sat:11 lat:-27.4700000 lon:153.1000000",
   );
 
@@ -25,9 +26,11 @@ test("parses the tank diagnostic line including invalid echoes", () => {
     right: -0.2,
     ranges: {
       front: { valid: true, metres: 1.23 },
-      back: { valid: false, metres: 0 },
+      rear: { valid: false, metres: 0 },
       left: { valid: true, metres: 0.45 },
       right: { valid: true, metres: 2.5 },
+      up: { valid: true, metres: 3.1 },
+      down: { valid: false, metres: 0 },
     },
     gps: {
       fix: 3,

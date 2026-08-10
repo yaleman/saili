@@ -537,15 +537,19 @@ impl FlightControllerTelemetry {
                     }
                     CrsfTelemetry::Range {
                         front_metres,
-                        back_metres,
+                        rear_metres,
                         left_metres,
                         right_metres,
+                        up_metres,
+                        down_metres,
                     } => {
                         self.range = Some(RangeTelemetry {
                             front_metres,
-                            back_metres,
+                            rear_metres,
                             left_metres,
                             right_metres,
+                            up_metres,
+                            down_metres,
                         });
                     }
                     CrsfTelemetry::Heartbeat
@@ -605,9 +609,11 @@ struct MagnetometerTelemetry {
 
 struct RangeTelemetry {
     front_metres: Option<f32>,
-    back_metres: Option<f32>,
+    rear_metres: Option<f32>,
     left_metres: Option<f32>,
     right_metres: Option<f32>,
+    up_metres: Option<f32>,
+    down_metres: Option<f32>,
 }
 
 fn render(frame: &mut Frame, app: &App) {
@@ -1066,14 +1072,16 @@ fn render_telemetry(frame: &mut Frame, area: Rect, telemetry: &FlightControllerT
         .as_ref()
         .map(|current| {
             format!(
-                "F {}  B {}  L {}  R {}",
+                "F {}  B {}  L {}  R {}  U {}  D {}",
                 format_range(current.front_metres),
-                format_range(current.back_metres),
+                format_range(current.rear_metres),
                 format_range(current.left_metres),
-                format_range(current.right_metres)
+                format_range(current.right_metres),
+                format_range(current.up_metres),
+                format_range(current.down_metres)
             )
         })
-        .unwrap_or_else(|| "F --  B --  L --  R --".to_owned());
+        .unwrap_or_else(|| "F --  B --  L --  R --  U --  D --".to_owned());
     let environment = telemetry.last_error.as_ref().map_or_else(
         || {
             format!(

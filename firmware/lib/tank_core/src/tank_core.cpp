@@ -197,16 +197,16 @@ std::uint8_t crc8_dvb_s2(
 }
 
 std::array<std::uint8_t, kRangeFrameSize> encode_range_frame(
-    const std::array<std::uint16_t, kRangeSensorCount> &millimetres,
+    const std::array<std::uint16_t, kRangeDirectionCount> &millimetres,
     std::uint8_t valid_mask) {
     std::array<std::uint8_t, kRangeFrameSize> frame{};
     frame[0] = 0xC8;
-    frame[1] = 14;
+    frame[1] = 18;
     frame[2] = kRangeFrameType;
     frame[3] = 0x12;
     frame[4] = 0xC8;
     frame[5] = kRangeFrameVersion;
-    frame[6] = valid_mask & 0x0FU;
+    frame[6] = valid_mask & 0x3FU;
 
     for (std::size_t index = 0; index < millimetres.size(); ++index) {
         const std::size_t offset = 7 + index * 2;
@@ -235,4 +235,3 @@ const char *drive_state_name(DriveState state) {
 }
 
 }  // namespace tank
-

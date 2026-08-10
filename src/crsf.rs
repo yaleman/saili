@@ -171,22 +171,24 @@ impl CrsfFrame {
                 // classify frames with the private range header as range
                 // telemetry. Other valid 0x7C frames must not become payload
                 // errors merely because they are not our private format.
-                if self.payload.len() != 12 || self.payload[0] != 0x12 || self.payload[1] != 0xC8 {
+                if self.payload.len() != 16 || self.payload[0] != 0x12 || self.payload[1] != 0xC8 {
                     return Ok(CrsfTelemetry::Unknown {
                         frame_type: self.frame_type,
                     });
                 }
-                require_payload(self, 12)?;
+                require_payload(self, 16)?;
                 let version = self.payload[2];
-                if version != 1 {
+                if version != 2 {
                     return Err(CrsfError::UnsupportedRangeVersion { version });
                 }
                 let valid_mask = self.payload[3];
                 Ok(CrsfTelemetry::Range {
                     front_metres: read_range(&self.payload[4..6], valid_mask, 0),
-                    back_metres: read_range(&self.payload[6..8], valid_mask, 1),
+                    rear_metres: read_range(&self.payload[6..8], valid_mask, 1),
                     left_metres: read_range(&self.payload[8..10], valid_mask, 2),
                     right_metres: read_range(&self.payload[10..12], valid_mask, 3),
+                    up_metres: read_range(&self.payload[12..14], valid_mask, 4),
+                    down_metres: read_range(&self.payload[14..16], valid_mask, 5),
                 })
             }
             frame_type => Ok(CrsfTelemetry::Unknown { frame_type }),
@@ -275,9 +277,11 @@ pub enum CrsfTelemetry {
     MspResponse,
     Range {
         front_metres: Option<f32>,
-        back_metres: Option<f32>,
+        rear_metres: Option<f32>,
         left_metres: Option<f32>,
         right_metres: Option<f32>,
+        up_metres: Option<f32>,
+        down_metres: Option<f32>,
     },
     Unknown {
         frame_type: u8,
@@ -378,6 +382,6 @@ pub enum CrsfError {
         actual: usize,
     },
 
-    #[error("CRSF range telemetry version {version} is unsupported; expected version 1")]
+    #[error("CRSF range telemetry version {version} is unsupported; expected version 2")]
     UnsupportedRangeVersion { version: u8 },
 }

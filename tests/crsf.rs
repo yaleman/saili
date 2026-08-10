@@ -150,7 +150,8 @@ fn decodes_four_byte_barometric_altitude() {
 #[test]
 fn decodes_directional_range_telemetry() {
     let payload = [
-        0x12, 0xC8, 1, 0b1101, 0x01, 0xF4, 0xFF, 0xFF, 0x04, 0xD2, 0x07, 0xD0,
+        0x12, 0xC8, 2, 0b10_1101, 0x01, 0xF4, 0xFF, 0xFF, 0x04, 0xD2, 0x07, 0xD0, 0xFF, 0xFF, 0x00,
+        0xFA,
     ];
     let raw = make_frame(CRSF_FRAME_TYPE_RANGE, &payload);
     let frame = CrsfFrame::try_from(raw.as_slice()).expect("range frame should decode");
@@ -159,9 +160,11 @@ fn decodes_directional_range_telemetry() {
         frame.telemetry().expect("range payload should decode"),
         CrsfTelemetry::Range {
             front_metres: Some(0.5),
-            back_metres: None,
+            rear_metres: None,
             left_metres: Some(1.234),
             right_metres: Some(2.0),
+            up_metres: None,
+            down_metres: Some(0.25),
         }
     );
 }
@@ -169,14 +172,14 @@ fn decodes_directional_range_telemetry() {
 #[test]
 fn rejects_unknown_range_telemetry_version() {
     let payload = [
-        0x12, 0xC8, 2, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        0x12, 0xC8, 1, 0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
     ];
     let raw = make_frame(CRSF_FRAME_TYPE_RANGE, &payload);
     let frame = CrsfFrame::try_from(raw.as_slice()).expect("range frame should decode");
 
     assert_eq!(
         frame.telemetry(),
-        Err(CrsfError::UnsupportedRangeVersion { version: 2 })
+        Err(CrsfError::UnsupportedRangeVersion { version: 1 })
     );
 }
 

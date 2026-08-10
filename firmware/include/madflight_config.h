@@ -33,9 +33,8 @@ gps_gizmo      UBLOX
 gps_baud       0
 gps_ser_bus    1
 
-// A dedicated four-sensor driver is used instead of madflight's single
-// instance SR04 module.
+// A dedicated configurable TK50 driver is used instead of madflight's single
+// rangefinder instance.
 rdr_gizmo      NONE
 
 )";
-

@@ -40,9 +40,11 @@ const elements = Object.fromEntries(
     "left-value",
     "right-value",
     "range-front",
-    "range-back",
+    "range-rear",
     "range-left",
     "range-right",
+    "range-up",
+    "range-down",
     "range-age",
     "gps-fix",
     "gps-satellites",
@@ -395,7 +397,7 @@ function renderTelemetry() {
       elements[`${key}-value`].textContent = tank[key].toFixed(2);
       setAxis(elements[`${key}-bar`], tank[key]);
     }
-    for (const direction of ["front", "back", "left", "right"]) {
+    for (const direction of ["front", "rear", "left", "right", "up", "down"]) {
       renderRange(direction, tank.ranges[direction]);
     }
     elements["range-age"].textContent = "Live";

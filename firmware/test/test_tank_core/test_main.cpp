@@ -112,16 +112,16 @@ void test_median_filter_rejects_single_outlier() {
     assert_near(1.1F, filter.push(9.0F));
 }
 
-void test_range_frame_contains_four_ranges_and_validity() {
+void test_range_frame_contains_six_ranges_and_validity() {
     const auto frame = tank::encode_range_frame(
-        std::array<std::uint16_t, 4>{123, 456, 789, 1000},
-        0b1101);
+        std::array<std::uint16_t, 6>{123, 456, 789, 1000, 1200, 1500},
+        0b101101);
 
     TEST_ASSERT_EQUAL_HEX8(0xC8, frame[0]);
-    TEST_ASSERT_EQUAL_UINT8(14, frame[1]);
+    TEST_ASSERT_EQUAL_UINT8(18, frame[1]);
     TEST_ASSERT_EQUAL_HEX8(tank::kRangeFrameType, frame[2]);
     TEST_ASSERT_EQUAL_UINT8(tank::kRangeFrameVersion, frame[5]);
-    TEST_ASSERT_EQUAL_HEX8(0x0D, frame[6]);
+    TEST_ASSERT_EQUAL_HEX8(0x2D, frame[6]);
     TEST_ASSERT_EQUAL_HEX8(0x00, frame[7]);
     TEST_ASSERT_EQUAL_HEX8(0x7B, frame[8]);
     TEST_ASSERT_EQUAL_HEX8(
@@ -138,7 +138,6 @@ int main(int, char **) {
     RUN_TEST(test_failsafe_stops_immediately);
     RUN_TEST(test_reverse_command_passes_through_neutral_hold);
     RUN_TEST(test_median_filter_rejects_single_outlier);
-    RUN_TEST(test_range_frame_contains_four_ranges_and_validity);
+    RUN_TEST(test_range_frame_contains_six_ranges_and_validity);
     return UNITY_END();
 }
-
